@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+pytest-cache-files-*/
+.venv/
+frontend/node_modules/
+frontend/dist/
+backend/data/*.json
+backend/data/*.bak
+backend/data/*.tmp
+/work/docs/
+.env
+.env.*
+!.env.example
