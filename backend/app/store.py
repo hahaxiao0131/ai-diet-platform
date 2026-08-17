@@ -9,7 +9,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from .food_catalog import extended_foods
-from .models import AIAction, Food, GoalProposal, Meal, MealDraft, MealPlan, Profile
+from .models import AgentFeedback, AgentMemory, AgentTrace, AIAction, Food, GoalProposal, Meal, MealDraft, MealPlan, Profile
 
 
 def seeded_foods() -> list[Food]:
@@ -112,6 +112,9 @@ class MemoryStore:
         self.meals: dict[UUID, Meal] = {}
         self.plans: dict[UUID, MealPlan] = {}
         self.ai_actions: dict[UUID, AIAction] = {}
+        self.agent_memories: dict[UUID, AgentMemory] = {}
+        self.agent_traces: dict[UUID, AgentTrace] = {}
+        self.agent_feedback: dict[UUID, AgentFeedback] = {}
         self.weights: dict[UUID, list[dict]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
         self._load()
@@ -124,12 +127,16 @@ class MemoryStore:
             "users": {key: str(value) for key, value in self.users.items()},
             "profiles": [item.model_dump(mode="json") for item in self.profiles.values()],
             "custom_foods": [item.model_dump(mode="json") for item in self.foods if item.food_type == "custom"],
+            "dynamic_foods": [item.model_dump(mode="json") for item in self.foods if item.source in {"open_food_facts", "user_confirmed_label"}],
             "goal_proposals": [item.model_dump(mode="json") for item in self.goal_proposals.values()],
             "active_goals": {str(profile_id): str(goal.id) for profile_id, goal in self.active_goals.items()},
             "drafts": [item.model_dump(mode="json") for item in self.drafts.values()],
             "meals": [item.model_dump(mode="json") for item in self.meals.values()],
             "plans": [item.model_dump(mode="json") for item in self.plans.values()],
             "ai_actions": [item.model_dump(mode="json") for item in self.ai_actions.values()],
+            "agent_memories": [item.model_dump(mode="json") for item in self.agent_memories.values()],
+            "agent_traces": [item.model_dump(mode="json") for item in self.agent_traces.values()],
+            "agent_feedback": [item.model_dump(mode="json") for item in self.agent_feedback.values()],
             "weights": _json_value({str(key): value for key, value in self.weights.items()}),
             "sessions": _json_value(self.sessions),
         }
@@ -157,8 +164,9 @@ class MemoryStore:
         profiles = [Profile.model_validate(item) for item in payload.get("profiles", [])]
         self.profiles = {item.id: item for item in profiles}
         custom_foods = [Food.model_validate(item) for item in payload.get("custom_foods", [])]
+        dynamic_foods = [Food.model_validate(item) for item in payload.get("dynamic_foods", [])]
         existing_food_ids = {item.id for item in self.foods}
-        self.foods.extend(item for item in custom_foods if item.id not in existing_food_ids)
+        self.foods.extend(item for item in [*custom_foods, *dynamic_foods] if item.id not in existing_food_ids)
         proposals = [GoalProposal.model_validate(item) for item in payload.get("goal_proposals", [])]
         self.goal_proposals = {item.id: item for item in proposals}
         self.active_goals = {}
@@ -174,6 +182,12 @@ class MemoryStore:
         self.plans = {item.id: item for item in plans}
         actions = [AIAction.model_validate(item) for item in payload.get("ai_actions", [])]
         self.ai_actions = {item.id: item for item in actions}
+        memories = [AgentMemory.model_validate(item) for item in payload.get("agent_memories", [])]
+        self.agent_memories = {item.id: item for item in memories}
+        traces = [AgentTrace.model_validate(item) for item in payload.get("agent_traces", [])]
+        self.agent_traces = {item.id: item for item in traces}
+        feedback = [AgentFeedback.model_validate(item) for item in payload.get("agent_feedback", [])]
+        self.agent_feedback = {item.trace_id: item for item in feedback}
         self.weights = {UUID(key): value for key, value in payload.get("weights", {}).items()}
         self.sessions = payload.get("sessions", {})
 
@@ -194,6 +208,9 @@ class MemoryStore:
 
     def meals_for(self, profile_id: UUID) -> list[Meal]:
         return [meal for meal in self.meals.values() if meal.profile_id == profile_id and meal.status == "active"]
+
+    def memories_for(self, profile_id: UUID) -> list[AgentMemory]:
+        return [memory for memory in self.agent_memories.values() if memory.profile_id == profile_id and memory.status == "active"]
 
 
 def _json_value(value: Any) -> Any:

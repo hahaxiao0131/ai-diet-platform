@@ -11,7 +11,19 @@ GoalType = Literal["fat_loss", "muscle_gain", "maintain", "structure"]
 GoalPace = Literal["steady", "standard", "aggressive"]
 MealType = Literal["breakfast", "lunch", "dinner", "snack"]
 Scenario = Literal["home", "quick", "convenience"]
-AIResponseKind = Literal["explanation", "meal_record_proposal", "plan_recommendation", "food_replacement", "clarification"]
+AIResponseKind = Literal[
+    "explanation",
+    "meal_record_proposal",
+    "plan_recommendation",
+    "food_replacement",
+    "food_nutrition",
+    "dietary_knowledge",
+    "memory_proposal",
+    "clarification",
+    "safety",
+]
+AgentConfidence = Literal["high", "medium", "low"]
+AgentDecisionStage = Literal["inform", "clarify", "propose", "safety"]
 
 
 class PhoneCodeRequest(BaseModel):
@@ -37,6 +49,7 @@ class Nutrition(BaseModel):
     carbs_g: float = 0
     fiber_g: float = 0
     sodium_mg: float = 0
+    sugars_g: float | None = None
     added_sugar_g: float | None = None
     vegetable_g: float = 0
     fruit_g: float = 0
@@ -51,6 +64,11 @@ class Food(BaseModel):
     default_weight_g: float | None = None
     source: str = "local_seed"
     source_version: str = "seed-v1"
+    source_url: str | None = None
+    source_observed_at: datetime | None = None
+    barcode: str | None = None
+    brand: str | None = None
+    verified_by_user: bool = False
     nutrition_per_100g: Nutrition = Field(default_factory=Nutrition)
     allergens: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
@@ -62,6 +80,11 @@ class CustomFoodCreateRequest(BaseModel):
     basis_weight_g: float = Field(default=100, gt=0, le=5000)
     nutrition: Nutrition
     default_weight_g: float | None = Field(default=None, gt=0, le=5000)
+
+
+class PackagedFoodLabelRequest(CustomFoodCreateRequest):
+    barcode: str | None = Field(default=None, pattern=r"^\d{8,14}$")
+    brand: str | None = Field(default=None, max_length=80)
 
 
 class Profile(BaseModel):
@@ -188,14 +211,67 @@ class AIChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=500)
 
 
+class AgentContext(BaseModel):
+    recorded_meals: int
+    expected_meals: int
+    remaining_energy_kcal: float
+    remaining_protein_g: float
+    remaining_fiber_g: float
+    gaps: list[str] = Field(default_factory=list)
+    near_limits: list[str] = Field(default_factory=list)
+    data_confidence: AgentConfidence
+    missing_data: list[str] = Field(default_factory=list)
+    active_memories: list[str] = Field(default_factory=list)
+
+
+class AgentMemory(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    profile_id: UUID
+    category: Literal["preference", "avoidance", "habit"]
+    value: str
+    source_message: str
+    status: Literal["active", "deleted"] = "active"
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AgentTrace(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    profile_id: UUID
+    message: str
+    intent: str
+    decision_stage: AgentDecisionStage
+    confidence: AgentConfidence
+    context_snapshot: dict[str, Any]
+    outcome: str
+    requires_confirmation: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class AgentFeedbackRequest(BaseModel):
+    rating: Literal["helpful", "not_helpful"]
+    reason: str | None = Field(default=None, max_length=300)
+
+
+class AgentFeedback(BaseModel):
+    trace_id: UUID
+    profile_id: UUID
+    rating: Literal["helpful", "not_helpful"]
+    reason: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class AIAction(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     profile_id: UUID
-    action_type: Literal["create_meal"] = "create_meal"
+    action_type: Literal["create_meal", "remember_preference"] = "create_meal"
     title: str
     summary: str
     payload: dict[str, Any]
     preview_nutrition: Nutrition = Field(default_factory=Nutrition)
+    confidence: AgentConfidence = "medium"
+    assumptions: list[str] = Field(default_factory=list)
+    source_trace_id: UUID | None = None
     status: Literal["proposed", "confirmed", "cancelled"] = "proposed"
     created_at: datetime = Field(default_factory=utc_now)
 
@@ -207,6 +283,12 @@ class AIChatResponse(BaseModel):
     suggestions: list[str] = Field(default_factory=list)
     action: AIAction | None = None
     cta: Literal["preview_plans"] | None = None
+    trace_id: UUID | None = None
+    confidence: AgentConfidence = "medium"
+    decision_stage: AgentDecisionStage = "inform"
+    context: AgentContext | None = None
+    needs_clarification: bool = False
+    clarification_options: list[str] = Field(default_factory=list)
 
 
 class MealPlan(BaseModel):

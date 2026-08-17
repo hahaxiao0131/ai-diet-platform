@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
+  BadgeCheck,
   Bot,
+  Brain,
   Camera,
   Check,
   ChevronDown,
@@ -18,14 +20,17 @@ import {
   Scale,
   Search,
   Send,
+  ScanBarcode,
   ShieldAlert,
   Sparkles,
   Trash2,
+  ThumbsDown,
+  ThumbsUp,
   UserRound,
   Utensils,
   X,
 } from "lucide-react";
-import { AIChatResponse, api, AuthSession, Food, GoalProposal, Meal, MealDraft, MealDraftItem, MealPlan, MealType, Nutrition, Profile, TodaySummary, setAccessToken } from "./api";
+import { AgentMemory, AIChatResponse, api, AuthSession, Food, GoalProposal, Meal, MealDraft, MealDraftItem, MealPlan, MealType, Nutrition, Profile, TodaySummary, setAccessToken } from "./api";
 
 type Tab = "today" | "record" | "assistant" | "profile";
 
@@ -48,6 +53,7 @@ const emptyNutrition: Nutrition = {
   carbs_g: 0,
   fiber_g: 0,
   sodium_mg: 0,
+  sugars_g: null,
   added_sugar_g: 0,
   vegetable_g: 0,
   fruit_g: 0,
@@ -240,6 +246,29 @@ type ManualMealSelection = {
   weight_g: number;
 };
 
+type CustomFoodForm = {
+  name: string;
+  brand: string;
+  barcode: string;
+  basis_weight_g: number;
+  default_weight_g: number;
+  energy_kcal: number;
+  protein_g: number;
+  fat_g: number;
+  carbs_g: number;
+  fiber_g: number;
+  sodium_mg: number;
+  sugars_g: number | null;
+  added_sugar_g: number | null;
+};
+
+function foodSourceLabel(food: Food) {
+  if (food.source === "user_confirmed_label") return "标签已确认";
+  if (food.source === "open_food_facts") return "条码数据库";
+  if (food.source === "user_nutrition_label") return "自定义标签";
+  return "本地食物库";
+}
+
 function LoginPage({ onLogin }: { onLogin: (session: AuthSession) => Promise<void> }) {
   const [mode, setMode] = useState<"wechat" | "phone">("wechat");
   const [phone, setPhone] = useState("");
@@ -410,11 +439,15 @@ function RecordPage({ today, onRecord, onManual, onQuick, draft, onConfirm, onCa
 function ManualRecordModal({ initialItems, onClose, onSave }: { initialItems: ManualMealSelection[]; onClose: () => void; onSave: (items: ManualMealSelection[], mealType: MealType) => Promise<void> }) {
   const categories = ["常用", "主食", "肉蛋", "蔬菜", "水果", "奶豆", "常见菜"];
   const [query, setQuery] = useState("");
+  const [barcode, setBarcode] = useState("");
+  const [barcodeNotice, setBarcodeNotice] = useState("");
   const [results, setResults] = useState<Food[]>([]);
   const [selected, setSelected] = useState<ManualMealSelection[]>(initialItems);
   const [mealType, setMealType] = useState<MealType>(currentMealType());
-  const [custom, setCustom] = useState({
+  const [custom, setCustom] = useState<CustomFoodForm>({
     name: "",
+    brand: "",
+    barcode: "",
     basis_weight_g: 100,
     default_weight_g: 100,
     energy_kcal: 0,
@@ -423,7 +456,8 @@ function ManualRecordModal({ initialItems, onClose, onSave }: { initialItems: Ma
     carbs_g: 0,
     fiber_g: 0,
     sodium_mg: 0,
-    added_sugar_g: 0,
+    sugars_g: null,
+    added_sugar_g: null,
   });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -457,6 +491,57 @@ function ManualRecordModal({ initialItems, onClose, onSave }: { initialItems: Ma
       : [...current, { food, weight_g: food.default_weight_g ?? 100 }]);
   }
 
+  async function lookupBarcode() {
+    const normalized = barcode.trim();
+    if (!/^\d{8,14}$/.test(normalized)) {
+      setError("请输入 8 至 14 位商品条码");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setBarcodeNotice("");
+    try {
+      const food = await api.lookupBarcode(normalized);
+      setResults((current) => [food, ...current.filter((item) => item.id !== food.id)]);
+      setBarcodeNotice(`已找到 ${food.brand ? `${food.brand} · ` : ""}${food.name}，请核对后添加`);
+      setCustom((current) => ({
+        ...current,
+        name: food.name,
+        brand: food.brand ?? "",
+        barcode: normalized,
+        basis_weight_g: 100,
+        default_weight_g: food.default_weight_g ?? 100,
+        energy_kcal: food.nutrition_per_100g.energy_kcal,
+        protein_g: food.nutrition_per_100g.protein_g,
+        fat_g: food.nutrition_per_100g.fat_g,
+        carbs_g: food.nutrition_per_100g.carbs_g,
+        fiber_g: food.nutrition_per_100g.fiber_g,
+        sodium_mg: food.nutrition_per_100g.sodium_mg,
+        sugars_g: food.nutrition_per_100g.sugars_g,
+        added_sugar_g: food.nutrition_per_100g.added_sugar_g,
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "条码查询失败，请按包装标签录入");
+      setCustom({
+        name: "",
+        brand: "",
+        barcode: normalized,
+        basis_weight_g: 100,
+        default_weight_g: 100,
+        energy_kcal: 0,
+        protein_g: 0,
+        fat_g: 0,
+        carbs_g: 0,
+        fiber_g: 0,
+        sodium_mg: 0,
+        sugars_g: null,
+        added_sugar_g: null,
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function updateWeight(foodId: string, weight: number) {
     setSaveError("");
     setSelected(selected.map((item) => item.food.id === foodId ? { ...item, weight_g: weight } : item));
@@ -474,7 +559,7 @@ function ManualRecordModal({ initialItems, onClose, onSave }: { initialItems: Ma
     setLoading(true);
     setError("");
     try {
-      const food = await api.createCustomFood({
+      const payload = {
         name: custom.name.trim(),
         basis_weight_g: custom.basis_weight_g,
         default_weight_g: custom.default_weight_g,
@@ -485,15 +570,21 @@ function ManualRecordModal({ initialItems, onClose, onSave }: { initialItems: Ma
           carbs_g: custom.carbs_g,
           fiber_g: custom.fiber_g,
           sodium_mg: custom.sodium_mg,
+          sugars_g: custom.sugars_g,
           added_sugar_g: custom.added_sugar_g,
           vegetable_g: 0,
           fruit_g: 0,
         },
-      });
+      };
+      const food = custom.barcode || custom.brand
+        ? await api.createLabelFood({ ...payload, barcode: custom.barcode || undefined, brand: custom.brand.trim() || undefined })
+        : await api.createCustomFood(payload);
       setResults((current) => [food, ...current]);
       addFood(food);
       setCustom({
         name: "",
+        brand: "",
+        barcode: "",
         basis_weight_g: 100,
         default_weight_g: 100,
         energy_kcal: 0,
@@ -502,7 +593,8 @@ function ManualRecordModal({ initialItems, onClose, onSave }: { initialItems: Ma
         carbs_g: 0,
         fiber_g: 0,
         sodium_mg: 0,
-        added_sugar_g: 0,
+        sugars_g: null,
+        added_sugar_g: null,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建自定义食物失败");
@@ -551,6 +643,13 @@ function ManualRecordModal({ initialItems, onClose, onSave }: { initialItems: Ma
           />
           <button className="button primary" onClick={() => search()} disabled={loading}><Search size={15} />{loading ? "搜索中" : "搜索"}</button>
         </div>
+        <div className="barcode-lookup">
+          <ScanBarcode size={19} />
+          <div><strong>包装食品条码</strong><span>优先查询品牌营养数据，未收录时再按实物标签录入</span></div>
+          <input inputMode="numeric" value={barcode} onChange={(event) => setBarcode(event.target.value.replace(/\D/g, ""))} onKeyDown={(event) => { if (event.key === "Enter") lookupBarcode(); }} placeholder="输入 8-14 位条码" aria-label="商品条码" />
+          <button className="button ghost" disabled={loading} onClick={lookupBarcode}>{loading ? "查询中" : "查询"}</button>
+        </div>
+        {barcodeNotice && <div className="barcode-notice"><BadgeCheck size={15} />{barcodeNotice}</div>}
         <div className="meal-type-control" aria-label="选择餐次">
           {(Object.entries(mealTypeLabels) as [MealType, string][]).map(([value, label]) => <button className={mealType === value ? "active" : ""} key={value} onClick={() => setMealType(value)}>{label}</button>)}
         </div>
@@ -567,7 +666,7 @@ function ManualRecordModal({ initialItems, onClose, onSave }: { initialItems: Ma
               : results.map((food) => {
                 const isSelected = selected.some((item) => item.food.id === food.id);
                 return <button className={`food-result ${isSelected ? "selected" : ""}`} disabled={isSelected} key={food.id} onClick={() => addFood(food)}>
-                  <div><strong>{food.name}</strong><span>{Math.round(food.nutrition_per_100g.energy_kcal)} kcal / 100g · 默认 {Math.round(food.default_weight_g ?? 100)}g{food.food_type === "custom" ? " · 自定义" : ""}</span></div>
+                  <div><strong>{food.name}</strong><span>{food.brand ? `${food.brand} · ` : ""}{Math.round(food.nutrition_per_100g.energy_kcal)} kcal / 100g · 默认 {Math.round(food.default_weight_g ?? 100)}g</span><small className={`food-source ${food.source}`}>{foodSourceLabel(food)} · 可信度{food.confidence === "high" ? "高" : food.confidence === "medium" ? "中" : "低"}</small></div>
                   <span className="food-add-state">{isSelected ? <><Check size={14} />已添加</> : <><Plus size={15} />添加</>}</span>
                 </button>;
               })}
@@ -589,6 +688,8 @@ function ManualRecordModal({ initialItems, onClose, onSave }: { initialItems: Ma
           <div className="custom-food-heading"><FileText size={17} /><div><span className="eyebrow">营养成分表录入</span><strong>找不到食物时，按标签创建自定义食物</strong></div></div>
           <div className="custom-form">
             <label className="custom-field wide"><span>食物名称</span><input value={custom.name} onChange={(event) => setCustom({ ...custom, name: event.target.value })} placeholder="如 低脂酸奶" /></label>
+            <label className="custom-field"><span>品牌（选填）</span><input value={custom.brand} onChange={(event) => setCustom({ ...custom, brand: event.target.value })} placeholder="包装品牌" /></label>
+            <label className="custom-field"><span>条码（选填）</span><input inputMode="numeric" value={custom.barcode} onChange={(event) => setCustom({ ...custom, barcode: event.target.value.replace(/\D/g, "") })} placeholder="8-14 位" /></label>
             <label className="custom-field"><span>标签基准</span><input type="number" min={1} value={custom.basis_weight_g} onChange={(event) => setCustom({ ...custom, basis_weight_g: Number(event.target.value) })} /><small>g</small></label>
             <label className="custom-field"><span>本次份量</span><input type="number" min={1} value={custom.default_weight_g} onChange={(event) => setCustom({ ...custom, default_weight_g: Number(event.target.value) })} /><small>g</small></label>
             <label className="custom-field"><span>能量</span><input type="number" min={0} value={custom.energy_kcal} onChange={(event) => setCustom({ ...custom, energy_kcal: Number(event.target.value) })} /><small>kcal</small></label>
@@ -597,9 +698,10 @@ function ManualRecordModal({ initialItems, onClose, onSave }: { initialItems: Ma
             <label className="custom-field"><span>碳水</span><input type="number" min={0} value={custom.carbs_g} onChange={(event) => setCustom({ ...custom, carbs_g: Number(event.target.value) })} /><small>g</small></label>
             <label className="custom-field"><span>膳食纤维</span><input type="number" min={0} value={custom.fiber_g} onChange={(event) => setCustom({ ...custom, fiber_g: Number(event.target.value) })} /><small>g</small></label>
             <label className="custom-field"><span>钠</span><input type="number" min={0} value={custom.sodium_mg} onChange={(event) => setCustom({ ...custom, sodium_mg: Number(event.target.value) })} /><small>mg</small></label>
-            <label className="custom-field"><span>添加糖</span><input type="number" min={0} value={custom.added_sugar_g} onChange={(event) => setCustom({ ...custom, added_sugar_g: Number(event.target.value) })} /><small>g</small></label>
+            <label className="custom-field"><span>总糖（标签有才填）</span><input type="number" min={0} value={custom.sugars_g ?? ""} onChange={(event) => setCustom({ ...custom, sugars_g: event.target.value === "" ? null : Number(event.target.value) })} placeholder="未标示留空" /><small>g</small></label>
+            <label className="custom-field"><span>添加糖（标签有才填）</span><input type="number" min={0} value={custom.added_sugar_g ?? ""} onChange={(event) => setCustom({ ...custom, added_sugar_g: event.target.value === "" ? null : Number(event.target.value) })} placeholder="未标示留空" /><small>g</small></label>
           </div>
-          <button className="button ghost custom-create-button" disabled={loading} onClick={createCustomFood}><Plus size={16} />创建并加入本餐</button>
+          <button className="button ghost custom-create-button" disabled={loading} onClick={createCustomFood}><Plus size={16} />{custom.barcode || custom.brand ? "确认标签并加入本餐" : "创建并加入本餐"}</button>
         </div>
 
         <div className="manual-save-bar">
@@ -718,21 +820,37 @@ type AssistantMessage = {
   response?: AIChatResponse;
 };
 
+function agentAnswerLabel(response: AIChatResponse) {
+  if (response.decision_stage === "clarify") return "需要补充信息";
+  if (response.decision_stage === "propose") return "等待你确认";
+  if (response.decision_stage === "safety") return "安全边界";
+  if (response.kind === "food_nutrition") return "食物数据库";
+  if (response.kind === "dietary_knowledge") return "饮食知识";
+  if (response.kind === "food_replacement") return "食物替换建议";
+  return "基于今日记录";
+}
+
 function AssistantPage({ today, onPlans, onRecorded }: { today: TodaySummary | null; onPlans: () => void; onRecorded: () => Promise<void> }) {
-  const prompts = ["今天还能吃什么？", "为什么蛋白质不足？", "鸡胸肉能换什么？", "午餐吃了150克米饭和两个鸡蛋"];
+  const prompts = ["200g挂面的热量是多少？", "减脂可以吃主食吗？", "今天还能吃什么？", "午餐吃了150克米饭和两个鸡蛋"];
   const opening = today?.completeness.recorded_meals
     ? `我已经看到你今天记录的 ${today.completeness.recorded_meals} 餐。现在最值得关注的是${today.gaps.slice(0, 2).join("和") || "保持当前节奏"}。`
-    : "今天还没有餐次记录。你可以直接描述吃过的东西，我会先整理成待确认记录。";
+    : "今天还没有餐次记录。你可以查询食物营养、问饮食问题，或直接描述吃过的东西。";
   const [messages, setMessages] = useState<AssistantMessage[]>([{ id: "opening", role: "assistant", text: opening }]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [processingAction, setProcessingAction] = useState("");
+  const [memories, setMemories] = useState<AgentMemory[]>([]);
+  const [feedback, setFeedback] = useState<Record<string, "helpful" | "not_helpful">>({});
   const threadEndRef = useRef<HTMLDivElement>(null);
   const shouldFollowThread = useRef(false);
 
   useEffect(() => {
     if (shouldFollowThread.current) threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, sending]);
+
+  useEffect(() => {
+    api.getAiMemories().then(setMemories).catch(() => undefined);
+  }, []);
 
   async function sendMessage(value = input) {
     const message = value.trim();
@@ -761,14 +879,38 @@ function AssistantPage({ today, onPlans, onRecorded }: { today: TodaySummary | n
     if (!response.action) return;
     setProcessingAction(response.action.id);
     try {
-      await api.confirmAiAction(response.action.id);
+      const result = await api.confirmAiAction(response.action.id);
       updateAction(messageId, "confirmed");
-      await onRecorded();
-      setMessages((current) => [...current, { id: `saved-${Date.now()}`, role: "assistant", text: "已计入今日饮食。营养汇总和评分也已重新计算。" }]);
+      if (response.action.action_type === "create_meal") {
+        await onRecorded();
+        setMessages((current) => [...current, { id: `saved-${Date.now()}`, role: "assistant", text: "已计入今日饮食。营养汇总和评分也已重新计算。" }]);
+      } else if (result.memory) {
+        setMemories((current) => current.some((item) => item.id === result.memory!.id) ? current : [...current, result.memory!]);
+        setMessages((current) => [...current, { id: `remembered-${Date.now()}`, role: "assistant", text: "偏好已保存。后续建议会参考它，你可以在上方的记忆区随时删除。" }]);
+      }
     } catch (err) {
       setMessages((current) => [...current, { id: `confirm-error-${Date.now()}`, role: "assistant", text: err instanceof Error ? err.message : "记录确认失败，请稍后重试" }]);
     } finally {
       setProcessingAction("");
+    }
+  }
+
+  async function deleteMemory(memory: AgentMemory) {
+    try {
+      await api.deleteAiMemory(memory.id);
+      setMemories((current) => current.filter((item) => item.id !== memory.id));
+    } catch (err) {
+      setMessages((current) => [...current, { id: `memory-error-${Date.now()}`, role: "assistant", text: err instanceof Error ? err.message : "删除偏好失败，请稍后重试" }]);
+    }
+  }
+
+  async function rateResponse(traceId: string, rating: "helpful" | "not_helpful") {
+    if (feedback[traceId]) return;
+    try {
+      await api.giveAiFeedback(traceId, rating);
+      setFeedback((current) => ({ ...current, [traceId]: rating }));
+    } catch {
+      setMessages((current) => [...current, { id: `feedback-error-${Date.now()}`, role: "assistant", text: "反馈暂时没有保存成功。" }]);
     }
   }
 
@@ -786,8 +928,9 @@ function AssistantPage({ today, onPlans, onRecorded }: { today: TodaySummary | n
   }
 
   return <div className="content-stack assistant-page">
-    <div className="page-heading"><span className="eyebrow">AI助手</span><h1>下一步，吃得更明白。</h1><p>读取今日记录并提出可执行建议；任何写入都会先让你确认。</p></div>
+    <div className="page-heading"><span className="eyebrow">AI助手</span><h1>关于吃的，都可以问。</h1><p>查询食物营养、比较搭配或结合今日记录提问；任何数据写入都会先让你确认。</p></div>
     <div className="assistant-context"><div className="assistant-avatar"><Bot size={23} /></div><div><span className="eyebrow">当前上下文</span><strong>{today?.completeness.recorded_meals ?? 0} 餐已记录 · {Math.round(today?.remaining.energy_kcal ?? 0)} kcal 待安排</strong></div><span className="context-confidence">数据可信度 {today?.confidence === "medium" ? "中" : today?.confidence === "high" ? "高" : "待完善"}</span></div>
+    <div className="agent-memory"><div className="memory-heading"><Brain size={17} /><div><strong>AI 记住的偏好</strong><span>仅保存你确认过的信息</span></div></div><div className="memory-items">{memories.length === 0 ? <span className="empty-memory">暂无</span> : memories.map((memory) => <span className="memory-chip" key={memory.id}>{memory.category === "avoidance" ? "避免" : "喜欢"}：{memory.value}<button title={`删除关于${memory.value}的记忆`} aria-label={`删除关于${memory.value}的记忆`} onClick={() => deleteMemory(memory)}><X size={13} /></button></span>)}</div></div>
     <div className="prompt-grid">{prompts.map((prompt) => <button key={prompt} disabled={sending} onClick={() => sendMessage(prompt)}><span>{prompt}</span><ArrowRight size={15} /></button>)}</div>
     <section className="assistant-thread" aria-live="polite">
       {messages.map((message) => <div className={`chat-message ${message.role}`} key={message.id}>
@@ -795,16 +938,19 @@ function AssistantPage({ today, onPlans, onRecorded }: { today: TodaySummary | n
         <div className="message-body">
           {message.text && <p>{message.text}</p>}
           {message.response && <>
+            <div className={`agent-answer-meta ${message.response.decision_stage}`}><span>{agentAnswerLabel(message.response)}</span><span>置信度 {message.response.confidence === "high" ? "高" : message.response.confidence === "medium" ? "中" : "低"}</span></div>
             <p>{message.response.message}</p>
             {message.response.basis.length > 0 && <div className="evidence-list">{message.response.basis.map((item) => <span key={item}><Check size={13} />{item}</span>)}</div>}
+            {message.response.clarification_options.length > 0 && <div className="clarification-options">{message.response.clarification_options.map((option) => <button key={option} disabled={sending} onClick={() => sendMessage(option)}><span>{option}</span><ArrowRight size={14} /></button>)}</div>}
             {message.response.action && <div className={`ai-action-card ${message.response.action.status}`}>
               <div className="action-card-heading"><div><span className="eyebrow">待确认动作</span><strong>{message.response.action.title}</strong></div><FileText size={18} /></div>
-              <div className="action-foods">{message.response.action.payload.items.map((item) => <div key={item.food_id}><span>{item.name}</span><strong>{Math.round(item.weight_g)}g</strong></div>)}</div>
-              <div className="action-nutrition"><span>约 {Math.round(message.response.action.preview_nutrition.energy_kcal)} kcal</span><span>蛋白质 {Math.round(message.response.action.preview_nutrition.protein_g)}g</span></div>
-              {message.response.action.status === "proposed" ? <div className="action-buttons"><button className="button ghost" disabled={Boolean(processingAction)} onClick={() => cancelAction(message.id, message.response!)}>取消</button><button className="button primary" disabled={Boolean(processingAction)} onClick={() => confirmAction(message.id, message.response!)}><Check size={15} />{processingAction === message.response.action.id ? "处理中" : "确认记录"}</button></div> : <div className="action-status"><Check size={15} />{message.response.action.status === "confirmed" ? "已确认并计入今日" : "已取消，未写入数据"}</div>}
+              {message.response.action.action_type === "create_meal" ? <><div className="action-foods">{message.response.action.payload.items?.map((item) => <div key={item.food_id}><span>{item.name}</span><strong>{Math.round(item.weight_g)}g</strong></div>)}</div><div className="action-nutrition"><span>约 {Math.round(message.response.action.preview_nutrition.energy_kcal)} kcal</span><span>蛋白质 {Math.round(message.response.action.preview_nutrition.protein_g)}g</span></div></> : <div className="memory-action-summary"><Brain size={16} /><span>{message.response.action.summary}</span></div>}
+              {message.response.action.assumptions.length > 0 && <div className="action-assumptions"><strong>换算说明</strong>{message.response.action.assumptions.map((item) => <span key={item}>{item}</span>)}</div>}
+              {message.response.action.status === "proposed" ? <div className="action-buttons"><button className="button ghost" disabled={Boolean(processingAction)} onClick={() => cancelAction(message.id, message.response!)}>取消</button><button className="button primary" disabled={Boolean(processingAction)} onClick={() => confirmAction(message.id, message.response!)}><Check size={15} />{processingAction === message.response.action.id ? "处理中" : message.response.action.action_type === "create_meal" ? "确认记录" : "确认记住"}</button></div> : <div className="action-status"><Check size={15} />{message.response.action.status === "confirmed" ? message.response.action.action_type === "create_meal" ? "已确认并计入今日" : "偏好已保存" : "已取消，未写入数据"}</div>}
             </div>}
             {message.response.cta === "preview_plans" && <button className="assistant-cta" onClick={onPlans}><Utensils size={17} /><span><strong>查看三种下一餐方案</strong><small>先预览营养，再决定是否保存</small></span><ArrowRight size={17} /></button>}
             {message.response.suggestions.length > 0 && <div className="message-suggestions">{message.response.suggestions.map((suggestion) => <button key={suggestion} onClick={() => sendMessage(suggestion)}>{suggestion}</button>)}</div>}
+            {message.response.trace_id && <div className="agent-feedback"><span>{feedback[message.response.trace_id] ? "感谢反馈" : "这条回答有帮助吗？"}</span><button className={feedback[message.response.trace_id] === "helpful" ? "selected" : ""} disabled={Boolean(feedback[message.response.trace_id])} title="有帮助" aria-label="有帮助" onClick={() => rateResponse(message.response!.trace_id!, "helpful")}><ThumbsUp size={14} /></button><button className={feedback[message.response.trace_id] === "not_helpful" ? "selected" : ""} disabled={Boolean(feedback[message.response.trace_id])} title="没帮助" aria-label="没帮助" onClick={() => rateResponse(message.response!.trace_id!, "not_helpful")}><ThumbsDown size={14} /></button></div>}
           </>}
         </div>
       </div>)}

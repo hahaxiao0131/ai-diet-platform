@@ -8,7 +8,12 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from .food_search import search_catalog
+from .agent import answer_food_question, answer_general_diet_question, build_agent_context, portion_clarification_options
 from .models import (
+    AgentFeedback,
+    AgentFeedbackRequest,
+    AgentMemory,
+    AgentTrace,
     AIAction,
     AIChatRequest,
     AIChatResponse,
@@ -22,6 +27,7 @@ from .models import (
     MealPlanPreviewRequest,
     ManualMealCreateRequest,
     Nutrition,
+    PackagedFoodLabelRequest,
     PhoneCodeRequest,
     PhoneLoginRequest,
     ProfileUpdate,
@@ -31,6 +37,7 @@ from .models import (
 from .auth import DEV_MODE, create_session, exchange_wechat_code, identity_key, issue_phone_code, logout_session, optional_user, require_user, verify_phone_code
 from .providers import MockAdviceProvider, MockAssistantProvider, MockVisionProvider
 from .nutrition import build_today, calculate_goal, calculate_meal, scale_nutrition
+from .nutrition_sources import OpenFoodFactsProvider
 from .risk import detect_risks
 from .scoring import score_meal
 from .services import business_date
@@ -49,6 +56,28 @@ app.add_middleware(
 vision_provider = MockVisionProvider()
 advice_provider = MockAdviceProvider()
 assistant_provider = MockAssistantProvider()
+packaged_food_provider = OpenFoodFactsProvider()
+
+
+def traced_ai_response(profile_id, message, intent, context, response: AIChatResponse):
+    trace = AgentTrace(
+        profile_id=profile_id,
+        message=message,
+        intent=intent,
+        decision_stage=response.decision_stage,
+        confidence=response.confidence,
+        context_snapshot=context.model_dump(mode="json"),
+        outcome=response.kind,
+        requires_confirmation=response.action is not None,
+    )
+    response.trace_id = trace.id
+    response.context = context
+    if response.action:
+        response.action.source_trace_id = trace.id
+        store.ai_actions[response.action.id] = response.action
+    store.agent_traces[trace.id] = trace
+    store.persist()
+    return {"data": response}
 
 
 def get_profile(user_id: UUID):
@@ -76,10 +105,29 @@ def active_goal_or_error(profile_id: UUID):
 
 def visible_foods(profile_id: UUID | None = None) -> list[Food]:
     profile_tag = f"profile:{profile_id}" if profile_id else None
-    return [
-        food for food in store.foods
-        if food.food_type != "custom" or (profile_tag is not None and profile_tag in food.tags)
-    ]
+    visible: list[Food] = []
+    for food in store.foods:
+        owner_tags = [tag for tag in food.tags if tag.startswith("profile:")]
+        if owner_tags and (profile_tag is None or profile_tag not in owner_tags):
+            continue
+        visible.append(food)
+    preferred_by_barcode: dict[str, Food] = {}
+    source_priority = {"user_confirmed_label": 3, "open_food_facts": 2}
+    for food in visible:
+        if not food.barcode:
+            continue
+        current = preferred_by_barcode.get(food.barcode)
+        if current is None or source_priority.get(food.source, 1) >= source_priority.get(current.source, 1):
+            preferred_by_barcode[food.barcode] = food
+    return [food for food in visible if not food.barcode or preferred_by_barcode.get(food.barcode) is food]
+
+
+def nutrition_from_label(payload: CustomFoodCreateRequest) -> Nutrition:
+    factor = 100 / payload.basis_weight_g
+    return Nutrition(**{
+        key: (value * factor if value is not None else None)
+        for key, value in payload.nutrition.model_dump().items()
+    })
 
 
 def build_meal_from_foods(
@@ -232,7 +280,10 @@ def search_foods(
     user_id: UUID | None = Depends(optional_user),
 ):
     profile_id = get_profile(user_id).id if user_id else None
-    return {"data": search_catalog(visible_foods(profile_id), q)}
+    foods = visible_foods(profile_id)
+    if not q.strip():
+        foods = [food for food in foods if food.source != "open_food_facts"]
+    return {"data": search_catalog(foods, q)}
 
 
 @app.get("/api/v1/foods/recent")
@@ -248,16 +299,30 @@ def recent_foods(user_id: UUID = Depends(require_user)):
     return {"data": [foods_by_id[food_id] for food_id in food_ids if food_id in foods_by_id][:10]}
 
 
+@app.get("/api/v1/foods/barcode/{barcode}")
+def lookup_food_barcode(barcode: str, user_id: UUID = Depends(require_user)):
+    if not barcode.isdigit() or not 8 <= len(barcode) <= 14:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_BARCODE", "message": "请输入 8 至 14 位商品条码"})
+    profile = get_profile(user_id)
+    visible = visible_foods(profile.id)
+    user_label = next((food for food in reversed(visible) if food.barcode == barcode and food.source == "user_confirmed_label"), None)
+    if user_label:
+        return {"data": user_label}
+    cached = next((food for food in reversed(visible) if food.barcode == barcode and food.source == "open_food_facts"), None)
+    if cached:
+        return {"data": cached}
+    food = packaged_food_provider.lookup(barcode)
+    if food is None:
+        raise HTTPException(status_code=404, detail={"code": "BARCODE_NOT_FOUND", "message": "条码库暂未收录，请按包装营养成分表录入"})
+    store.foods.append(food)
+    store.persist()
+    return {"data": food}
+
+
 @app.post("/api/v1/foods/custom")
 def create_custom_food(payload: CustomFoodCreateRequest, user_id: UUID = Depends(require_user)):
     profile = get_profile(user_id)
-    factor = 100 / payload.basis_weight_g
-    nutrition_per_100g = Nutrition(
-        **{
-            key: (value * factor if value is not None else None)
-            for key, value in payload.nutrition.model_dump().items()
-        }
-    )
+    nutrition_per_100g = nutrition_from_label(payload)
     food = Food(
         name=payload.name.strip(),
         food_type="custom",
@@ -270,6 +335,34 @@ def create_custom_food(payload: CustomFoodCreateRequest, user_id: UUID = Depends
         confidence="high",
     )
     store.foods.append(food)
+    store.persist()
+    return {"data": food}
+
+
+@app.post("/api/v1/foods/label")
+def create_packaged_food_label(payload: PackagedFoodLabelRequest, user_id: UUID = Depends(require_user)):
+    profile = get_profile(user_id)
+    food = Food(
+        name=payload.name.strip(),
+        food_type="packaged",
+        default_unit="1份",
+        default_weight_g=payload.default_weight_g or payload.basis_weight_g,
+        source="user_confirmed_label",
+        source_version="user-label-v1",
+        source_observed_at=datetime.now(timezone.utc),
+        barcode=payload.barcode,
+        brand=payload.brand.strip() if payload.brand else None,
+        verified_by_user=True,
+        nutrition_per_100g=nutrition_from_label(payload),
+        tags=["user_label", "packaged", f"profile:{profile.id}"],
+        confidence="high",
+    )
+    existing = next((item for item in store.foods if item.barcode and item.barcode == payload.barcode and f"profile:{profile.id}" in item.tags), None)
+    if existing:
+        food.id = existing.id
+        store.foods[store.foods.index(existing)] = food
+    else:
+        store.foods.append(food)
     store.persist()
     return {"data": food}
 
@@ -395,7 +488,11 @@ def preview_meal_plans(payload: MealPlanPreviewRequest, user_id: UUID = Depends(
     profile = get_profile(user_id)
     goal = active_goal_or_error(profile.id)
     today_data = build_today(profile, store.meals_for(profile.id), goal.target)
-    options = advice_provider.propose({"remaining": today_data.remaining.model_dump()}, store.foods)
+    avoidances = [memory.value for memory in store.memories_for(profile.id) if memory.category == "avoidance"]
+    options = advice_provider.propose(
+        {"remaining": today_data.remaining.model_dump(), "avoidances": [*profile.hard_exclusions, *avoidances]},
+        visible_foods(profile.id),
+    )
     plans = []
     for option in options:
         items = []
@@ -463,8 +560,74 @@ def ai_chat(payload: AIChatRequest, user_id: UUID = Depends(require_user)):
     profile = get_profile(user_id)
     goal = active_goal_or_error(profile.id)
     today_data = build_today(profile, store.meals_for(profile.id), goal.target)
-    interpretation = assistant_provider.interpret(payload.message, store.foods)
+    memories = store.memories_for(profile.id)
+    context = build_agent_context(today_data, memories)
+    interpretation = assistant_provider.interpret(payload.message, visible_foods(profile.id))
     intent = interpretation["intent"]
+
+    if intent == "safety":
+        return traced_ai_response(profile.id, payload.message, intent, context, AIChatResponse(
+            kind="safety",
+            message="这个问题涉及疾病、用药或特殊生理状态，我不能据此替你调整治疗或给出诊断性饮食方案。请先咨询医生或注册营养师；我可以继续帮你如实记录饮食。",
+            basis=["当前助手只提供一般饮食管理支持", "医疗目标和禁忌必须由专业人员确认"],
+            suggestions=["帮我记录刚才吃的食物", "查看今天的普通饮食记录"],
+            confidence="high",
+            decision_stage="safety",
+        ))
+
+    if intent == "memory_preference":
+        value = interpretation.get("memory_value")
+        if not value:
+            return traced_ai_response(profile.id, payload.message, intent, context, AIChatResponse(
+                kind="clarification",
+                message="我理解你想设置饮食偏好，但还没识别出具体食物。请直接说，例如“我不喜欢鸡胸肉”。",
+                basis=["只记住你明确表达并确认的偏好"],
+                suggestions=["我不喜欢鸡胸肉", "我喜欢豆腐"],
+                confidence="low",
+                decision_stage="clarify",
+                needs_clarification=True,
+            ))
+        category = interpretation["memory_category"]
+        verb = "避免" if category == "avoidance" else "优先考虑"
+        action = AIAction(
+            profile_id=profile.id,
+            action_type="remember_preference",
+            title="确认保存饮食偏好",
+            summary=f"后续建议中{verb}{value}",
+            payload={"category": category, "value": value, "source_message": payload.message},
+            confidence="high",
+        )
+        return traced_ai_response(profile.id, payload.message, intent, context, AIChatResponse(
+            kind="memory_proposal",
+            message="我可以把这条信息作为可管理的饮食偏好保存。确认后才会用于后续建议，你也可以随时删除。",
+            basis=[f"识别到食物：{value}", "记忆只影响推荐，不会修改历史饮食记录"],
+            suggestions=[],
+            action=action,
+            confidence="high",
+            decision_stage="propose",
+        ))
+
+    if intent == "food_nutrition":
+        answer = answer_food_question(payload.message, interpretation["items"])
+        return traced_ai_response(profile.id, payload.message, intent, context, AIChatResponse(
+            kind="food_nutrition",
+            message=answer["message"],
+            basis=answer["basis"],
+            suggestions=["米饭和馒头哪个热量高？", "怎么看营养成分表？"],
+            confidence=answer["confidence"],
+            decision_stage="inform",
+        ))
+
+    if intent == "dietary_knowledge":
+        answer = answer_food_question(payload.message, interpretation["items"]) if interpretation["items"] else answer_general_diet_question(payload.message)
+        return traced_ai_response(profile.id, payload.message, intent, context, AIChatResponse(
+            kind="dietary_knowledge",
+            message=answer["message"],
+            basis=answer["basis"],
+            suggestions=["减脂可以吃主食吗？", "高蛋白食物有哪些？", "怎么看营养成分表？"],
+            confidence=answer["confidence"],
+            decision_stage="inform",
+        ))
 
     if intent == "protein_explanation":
         consumed = round(today_data.consumed.protein_g)
@@ -476,7 +639,7 @@ def ai_chat(payload: AIChatRequest, user_id: UUID = Depends(require_user)):
             message = f"目前记录的食物共提供约 {consumed}g 蛋白质，距离今日建议还差约 {remaining}g。下一餐优先安排一份明确的优质蛋白。"
         else:
             message = f"你今天已记录约 {consumed}g 蛋白质，已经达到当前建议目标。"
-        return {"data": AIChatResponse(
+        return traced_ai_response(profile.id, payload.message, intent, context, AIChatResponse(
             kind="explanation",
             message=message,
             basis=[
@@ -488,19 +651,24 @@ def ai_chat(payload: AIChatRequest, user_id: UUID = Depends(require_user)):
                 ),
             ],
             suggestions=["今天还能吃什么？", "帮我安排下一餐"],
-        )}
+            confidence=today_data.confidence,
+            decision_stage="inform",
+        ))
 
     if intent == "plan_recommendation":
         remaining_energy = max(0, round(today_data.remaining.energy_kcal))
         remaining_protein = max(0, round(today_data.remaining.protein_g))
         caution = f"，同时注意{today_data.near_limits[0]}已接近上限" if today_data.near_limits else ""
-        return {"data": AIChatResponse(
+        memory_basis = [f"已考虑偏好：{'、'.join(context.active_memories)}"] if context.active_memories else []
+        return traced_ai_response(profile.id, payload.message, intent, context, AIChatResponse(
             kind="plan_recommendation",
             message=f"下一餐可以优先补约 {remaining_protein}g 的蛋白质缺口{caution}。我会给你家常、快手和便利三种方案，营养值先预览再决定。",
-            basis=[f"今日剩余约 {remaining_energy} kcal", f"蛋白质还差约 {remaining_protein}g"],
+            basis=[f"今日剩余约 {remaining_energy} kcal", f"蛋白质还差约 {remaining_protein}g", *memory_basis],
             suggestions=["为什么蛋白质不足？", "鸡胸肉能换什么？"],
             cta="preview_plans",
-        )}
+            confidence=today_data.confidence,
+            decision_stage="inform",
+        ))
 
     if intent == "food_replacement":
         found_names = [item["food"].name for item in interpretation["items"]]
@@ -511,16 +679,35 @@ def ai_chat(payload: AIChatRequest, user_id: UUID = Depends(require_user)):
             "米饭": ["燕麦", "香蕉"],
         }
         source = found_names[0] if found_names else "当前蛋白质"
-        alternatives = replacement_map.get(source, ["虾仁", "豆腐", "鸡蛋"])
-        return {"data": AIChatResponse(
+        avoided = {memory.value for memory in memories if memory.category == "avoidance"}
+        avoided.update(profile.hard_exclusions)
+        alternatives = [name for name in replacement_map.get(source, ["虾仁", "豆腐", "鸡蛋"]) if name not in avoided]
+        if not alternatives:
+            alternatives = ["豆腐", "鸡蛋"]
+        return traced_ai_response(profile.id, payload.message, intent, context, AIChatResponse(
             kind="food_replacement",
             message=f"{source}可以优先换成{'、'.join(alternatives)}。替换时需要按实际份量重新计算，不能只按食物名称一比一替换。",
             basis=["替代顺序优先考虑营养接近", "禁忌与过敏优先于口味偏好"],
             suggestions=["帮我安排下一餐", "今天还能吃什么？"],
             cta="preview_plans",
-        )}
+            confidence="medium" if found_names else "low",
+            decision_stage="inform",
+        ))
 
     if intent == "meal_record":
+        low_confidence_items = [item for item in interpretation["items"] if item["weight_source"] == "default_estimate"]
+        if low_confidence_items:
+            names = "、".join(item["food"].name for item in low_confidence_items)
+            return traced_ai_response(profile.id, payload.message, intent, context, AIChatResponse(
+                kind="clarification",
+                message=f"我识别到了食物，但 {names} 的份量没有说清楚。补充克数，或确认按常用份量估算后，我再生成待确认记录。",
+                basis=[item["assumption"] for item in low_confidence_items if item["assumption"]],
+                suggestions=[],
+                confidence="low",
+                decision_stage="clarify",
+                needs_clarification=True,
+                clarification_options=portion_clarification_options(interpretation["items"]),
+            ))
         preview_items: list[MealItem] = []
         action_items = []
         for extracted in interpretation["items"]:
@@ -541,23 +728,67 @@ def ai_chat(payload: AIChatRequest, user_id: UUID = Depends(require_user)):
             summary=item_summary,
             payload={"meal_type": interpretation["meal_type"], "items": action_items},
             preview_nutrition=preview_nutrition,
+            confidence=interpretation["confidence"],
+            assumptions=[item["assumption"] for item in interpretation["items"] if item["assumption"]],
         )
-        store.ai_actions[action.id] = action
-        store.persist()
-        return {"data": AIChatResponse(
+        portion_basis = "份量来自你的明确描述" if not action.assumptions else "家庭单位已换算为克数，并明确列出假设"
+        return traced_ai_response(profile.id, payload.message, intent, context, AIChatResponse(
             kind="meal_record_proposal",
             message="我识别出了下面这些食物和份量。它们目前只是待确认提案，确认后才会计入今日数据。",
-            basis=["份量来自你的描述或常用份量估算", "最终营养由后端规则计算"],
+            basis=[portion_basis, "最终营养由后端规则计算"],
             suggestions=["今天还能吃什么？"],
             action=action,
-        )}
+            confidence=interpretation["confidence"],
+            decision_stage="propose",
+        ))
 
-    return {"data": AIChatResponse(
+    return traced_ai_response(profile.id, payload.message, intent, context, AIChatResponse(
         kind="clarification",
-        message="我目前最擅长帮你记录一餐、解释今天的数据、安排下一餐和替换食材。你可以直接说“午餐吃了150克米饭和两个鸡蛋”。",
-        basis=["V1 只处理饮食管理任务", "医疗问题需要咨询专业人员"],
-        suggestions=["今天还能吃什么？", "为什么蛋白质不足？", "午餐吃了150克米饭和两个鸡蛋"],
-    )}
+        message="我可以回答食物热量、营养成分、份量换算、食物比较和常见饮食搭配问题。请补充具体食物或你最关心的目标。",
+        basis=["普通饮食知识可以直接回答", "疾病治疗、诊断和用药仍需要专业人员"],
+        suggestions=["200g挂面的热量是多少？", "减脂可以吃主食吗？", "午餐吃了150克米饭和两个鸡蛋"],
+        confidence="low",
+        decision_stage="clarify",
+        needs_clarification=True,
+    ))
+
+
+@app.get("/api/v1/ai/context")
+def get_ai_context(user_id: UUID = Depends(require_user)):
+    profile = get_profile(user_id)
+    goal = active_goal_or_error(profile.id)
+    today_data = build_today(profile, store.meals_for(profile.id), goal.target)
+    return {"data": build_agent_context(today_data, store.memories_for(profile.id))}
+
+
+@app.get("/api/v1/ai/memories")
+def get_ai_memories(user_id: UUID = Depends(require_user)):
+    profile = get_profile(user_id)
+    return {"data": store.memories_for(profile.id)}
+
+
+@app.delete("/api/v1/ai/memories/{memory_id}")
+def delete_ai_memory(memory_id: UUID, user_id: UUID = Depends(require_user)):
+    profile = get_profile(user_id)
+    memory = store.agent_memories.get(memory_id)
+    if not memory or memory.profile_id != profile.id or memory.status == "deleted":
+        raise HTTPException(status_code=404, detail={"code": "AI_MEMORY_NOT_FOUND", "message": "这条记忆不存在"})
+    memory.status = "deleted"
+    memory.updated_at = datetime.now(timezone.utc)
+    store.persist()
+    return {"data": memory}
+
+
+@app.post("/api/v1/ai/traces/{trace_id}/feedback")
+def give_ai_feedback(trace_id: UUID, payload: AgentFeedbackRequest, user_id: UUID = Depends(require_user)):
+    profile = get_profile(user_id)
+    trace = store.agent_traces.get(trace_id)
+    if not trace or trace.profile_id != profile.id:
+        raise HTTPException(status_code=404, detail={"code": "AI_TRACE_NOT_FOUND", "message": "这次回答不存在"})
+    feedback = AgentFeedback(trace_id=trace_id, profile_id=profile.id, **payload.model_dump())
+    store.agent_feedback[trace_id] = feedback
+    store.persist()
+    return {"data": feedback}
 
 
 @app.post("/api/v1/ai/actions/{action_id}/confirm")
@@ -569,8 +800,22 @@ def confirm_ai_action(action_id: UUID, user_id: UUID = Depends(require_user)):
     if action.status == "cancelled":
         raise HTTPException(status_code=409, detail={"code": "AI_ACTION_CANCELLED", "message": "该动作已取消"})
     if action.status == "confirmed":
-        meal = store.meals.get(UUID(action.payload["meal_id"]))
-        return {"data": {"action": action, "meal": meal}}
+        meal = store.meals.get(UUID(action.payload["meal_id"])) if action.action_type == "create_meal" else None
+        memory = store.agent_memories.get(UUID(action.payload["memory_id"])) if action.action_type == "remember_preference" else None
+        return {"data": {"action": action, "meal": meal, "memory": memory}}
+    if action.action_type == "remember_preference":
+        existing = next((memory for memory in store.memories_for(profile.id) if memory.category == action.payload["category"] and memory.value == action.payload["value"]), None)
+        memory = existing or AgentMemory(
+            profile_id=profile.id,
+            category=action.payload["category"],
+            value=action.payload["value"],
+            source_message=action.payload["source_message"],
+        )
+        store.agent_memories[memory.id] = memory
+        action.status = "confirmed"
+        action.payload["memory_id"] = str(memory.id)
+        store.persist()
+        return {"data": {"action": action, "meal": None, "memory": memory}}
     goal = active_goal_or_error(profile.id)
     meal = build_meal_from_foods(
         profile,
@@ -583,7 +828,7 @@ def confirm_ai_action(action_id: UUID, user_id: UUID = Depends(require_user)):
     action.status = "confirmed"
     action.payload["meal_id"] = str(meal.id)
     store.persist()
-    return {"data": {"action": action, "meal": meal}}
+    return {"data": {"action": action, "meal": meal, "memory": None}}
 
 
 @app.post("/api/v1/ai/actions/{action_id}/cancel")

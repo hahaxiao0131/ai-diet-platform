@@ -21,6 +21,8 @@ def extended_foods() -> list[Food]:
         vegetable: float = 0,
         fruit: float = 0,
         food_type: str = "ingredient",
+        added_sugar: float | None = 0,
+        confidence: str = "medium",
     ) -> Food:
         return Food(
             name=name,
@@ -30,7 +32,7 @@ def extended_foods() -> list[Food]:
             default_weight_g=default_weight,
             source="local_extended_catalog",
             source_version="catalog-v1",
-            confidence="medium",
+            confidence=confidence,
             tags=[category, "可搜索食材"],
             nutrition_per_100g={
                 "energy_kcal": energy,
@@ -39,7 +41,7 @@ def extended_foods() -> list[Food]:
                 "carbs_g": carbs,
                 "fiber_g": fiber,
                 "sodium_mg": sodium,
-                "added_sugar_g": 0,
+                "added_sugar_g": added_sugar,
                 "vegetable_g": vegetable,
                 "fruit_g": fruit,
             },
@@ -53,6 +55,7 @@ def extended_foods() -> list[Food]:
         food("黑米饭", 114, 3.1, 0.9, 23.6, 1.7, 3, category="主食", default_weight=150, aliases=["黑米"]),
         food("藜麦（熟）", 120, 4.4, 1.9, 21.3, 2.8, 7, category="主食", default_weight=150, aliases=["藜麦", "熟藜麦"]),
         food("荞麦面（熟）", 99, 5.1, 0.1, 21.4, 2.3, 4, category="主食", default_weight=200, aliases=["荞麦面", "荞面"]),
+        food("挂面（干）", 348, 10.3, 0.6, 75.1, 1.6, 520, category="主食", default_weight=100, aliases=["挂面", "干挂面", "龙须面"]),
         food("米粉（熟）", 109, 1.8, 0.2, 24.9, 0.9, 5, category="主食", default_weight=200, aliases=["米线", "米粉"]),
         food("河粉（熟）", 110, 1.5, 0.5, 25, 0.6, 10, category="主食", default_weight=200, aliases=["河粉", "粿条"]),
         food("粉丝（熟）", 84, 0.1, 0.1, 20.5, 0.5, 5, category="主食", default_weight=150, aliases=["粉条", "绿豆粉丝"]),
@@ -88,6 +91,7 @@ def extended_foods() -> list[Food]:
         food("培根", 417, 12.6, 40.2, 1.4, 0, 1700, category="肉蛋", default_weight=40, aliases=["烟肉"]),
 
         # 蔬菜菌藻
+        food("圣女果", 22, 1, 0.2, 5.8, 1.8, 5, category="蔬菜", default_weight=150, vegetable=100, aliases=["小番茄", "樱桃番茄", "迷你番茄"]),
         food("圆白菜", 24, 1.3, 0.2, 5.8, 2.5, 18, category="蔬菜", default_weight=180, vegetable=100, aliases=["卷心菜", "包菜", "高丽菜"]),
         food("韭菜", 26, 2.4, 0.4, 4.6, 2.4, 8, category="蔬菜", default_weight=150, vegetable=100),
         food("洋葱", 40, 1.1, 0.1, 9.3, 1.7, 4, category="蔬菜", default_weight=100, vegetable=100, aliases=["洋葱头"]),
@@ -167,6 +171,7 @@ def extended_foods() -> list[Food]:
         food("酱油", 60, 8, 0.1, 5.6, 0.8, 5493, category="调味", default_weight=10, aliases=["生抽", "老抽"]),
         food("食醋", 21, 0.9, 0, 4.9, 0, 20, category="调味", default_weight=10, aliases=["醋", "陈醋", "米醋"]),
         food("白砂糖", 400, 0, 0, 100, 0, 0, category="调味", default_weight=5, aliases=["糖", "白糖"]),
+        food("旺仔QQ糖", 307, 6.1, 0, 69.3, 0, 10, category="零食", default_weight=20, aliases=["QQ糖", "qq糖", "水果软糖"], food_type="packaged", added_sugar=None, confidence="low"),
         food("蜂蜜", 304, 0.3, 0, 82.4, 0.2, 4, category="调味", default_weight=15),
         food("花生酱", 588, 25, 50, 20, 6, 420, category="调味", default_weight=15),
         food("芝麻酱", 630, 19.2, 52.7, 22.7, 5.9, 38, category="调味", default_weight=15, aliases=["麻酱"]),

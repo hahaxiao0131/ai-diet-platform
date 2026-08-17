@@ -46,6 +46,9 @@ export const api = {
   getRecentFoods: () => request<Food[]>("/foods/recent"),
   createCustomFood: (payload: CustomFoodCreatePayload) =>
     request<Food>("/foods/custom", { method: "POST", body: JSON.stringify(payload) }),
+  lookupBarcode: (barcode: string) => request<Food>(`/foods/barcode/${encodeURIComponent(barcode)}`),
+  createLabelFood: (payload: PackagedFoodLabelPayload) =>
+    request<Food>("/foods/label", { method: "POST", body: JSON.stringify(payload) }),
   createManualMeal: (payload: ManualMealCreatePayload) =>
     request<Meal>("/meals/manual", { method: "POST", body: JSON.stringify(payload) }),
   createDraft: (mealType: string) =>
@@ -82,8 +85,13 @@ export const api = {
     }),
   chat: (message: string) =>
     request<AIChatResponse>("/ai/chat", { method: "POST", body: JSON.stringify({ message }) }),
+  getAiContext: () => request<AgentContext>("/ai/context"),
+  getAiMemories: () => request<AgentMemory[]>("/ai/memories"),
+  deleteAiMemory: (id: string) => request<AgentMemory>(`/ai/memories/${id}`, { method: "DELETE" }),
+  giveAiFeedback: (traceId: string, rating: "helpful" | "not_helpful") =>
+    request<AgentFeedback>(`/ai/traces/${traceId}/feedback`, { method: "POST", body: JSON.stringify({ rating }) }),
   confirmAiAction: (id: string) =>
-    request<{ action: AIAction; meal: Meal }>(`/ai/actions/${id}/confirm`, { method: "POST" }),
+    request<{ action: AIAction; meal: Meal | null; memory: AgentMemory | null }>(`/ai/actions/${id}/confirm`, { method: "POST" }),
   cancelAiAction: (id: string) =>
     request<AIAction>(`/ai/actions/${id}/cancel`, { method: "POST" }),
 };
@@ -113,6 +121,7 @@ export type Nutrition = {
   carbs_g: number;
   fiber_g: number;
   sodium_mg: number;
+  sugars_g: number | null;
   added_sugar_g: number | null;
   vegetable_g: number;
   fruit_g: number;
@@ -127,6 +136,13 @@ export type Food = {
   default_weight_g: number | null;
   nutrition_per_100g: Nutrition;
   confidence: string;
+  source: string;
+  source_version: string;
+  source_url: string | null;
+  source_observed_at: string | null;
+  barcode: string | null;
+  brand: string | null;
+  verified_by_user: boolean;
 };
 
 export type CustomFoodCreatePayload = {
@@ -134,6 +150,11 @@ export type CustomFoodCreatePayload = {
   basis_weight_g: number;
   default_weight_g?: number;
   nutrition: Nutrition;
+};
+
+export type PackagedFoodLabelPayload = CustomFoodCreatePayload & {
+  barcode?: string;
+  brand?: string;
 };
 
 export type ManualMealCreatePayload = {
@@ -211,23 +232,63 @@ export type TodaySummary = {
 
 export type AIAction = {
   id: string;
-  action_type: "create_meal";
+  action_type: "create_meal" | "remember_preference";
   title: string;
   summary: string;
   payload: {
-    meal_type: "breakfast" | "lunch" | "dinner" | "snack";
-    items: { food_id: string; name: string; weight_g: number; consumed_ratio: number }[];
+    meal_type?: "breakfast" | "lunch" | "dinner" | "snack";
+    items?: { food_id: string; name: string; weight_g: number; consumed_ratio: number }[];
     meal_id?: string;
+    memory_id?: string;
+    category?: "preference" | "avoidance" | "habit";
+    value?: string;
   };
   preview_nutrition: Nutrition;
+  confidence: AgentConfidence;
+  assumptions: string[];
+  source_trace_id: string | null;
   status: "proposed" | "confirmed" | "cancelled";
 };
 
+export type AgentConfidence = "high" | "medium" | "low";
+
+export type AgentContext = {
+  recorded_meals: number;
+  expected_meals: number;
+  remaining_energy_kcal: number;
+  remaining_protein_g: number;
+  remaining_fiber_g: number;
+  gaps: string[];
+  near_limits: string[];
+  data_confidence: AgentConfidence;
+  missing_data: string[];
+  active_memories: string[];
+};
+
+export type AgentMemory = {
+  id: string;
+  category: "preference" | "avoidance" | "habit";
+  value: string;
+  status: "active" | "deleted";
+  created_at: string;
+};
+
+export type AgentFeedback = {
+  trace_id: string;
+  rating: "helpful" | "not_helpful";
+};
+
 export type AIChatResponse = {
-  kind: "explanation" | "meal_record_proposal" | "plan_recommendation" | "food_replacement" | "clarification";
+  kind: "explanation" | "meal_record_proposal" | "plan_recommendation" | "food_replacement" | "food_nutrition" | "dietary_knowledge" | "memory_proposal" | "clarification" | "safety";
   message: string;
   basis: string[];
   suggestions: string[];
   action: AIAction | null;
   cta: "preview_plans" | null;
+  trace_id: string | null;
+  confidence: AgentConfidence;
+  decision_stage: "inform" | "clarify" | "propose" | "safety";
+  context: AgentContext | null;
+  needs_clarification: boolean;
+  clarification_options: string[];
 };
