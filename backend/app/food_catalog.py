@@ -83,7 +83,7 @@ def extended_foods() -> list[Food]:
         food("沙丁鱼", 208, 24.6, 11.5, 0, 0, 307, category="肉蛋", default_weight=120),
         food("鱿鱼", 92, 15.6, 1.4, 3.1, 0, 44, category="肉蛋", default_weight=150, aliases=["鲜鱿"]),
         food("扇贝", 88, 16.8, 0.8, 3.2, 0, 392, category="肉蛋", default_weight=120, aliases=["带子"]),
-        food("螃蟹", 103, 17.5, 2.6, 2.3, 0, 260, category="肉蛋", default_weight=180, aliases=["大闸蟹", "海蟹"]),
+        food("螃蟹", 103, 17.5, 2.6, 2.3, 0, 260, category="肉蛋", default_weight=180, aliases=["大闸蟹", "小闸蟹", "海蟹"]),
         food("生蚝", 71, 10.9, 1.5, 3.4, 0, 462, category="肉蛋", default_weight=120, aliases=["牡蛎", "蚝"]),
         food("蛤蜊", 62, 10.1, 1.1, 2.8, 0, 425, category="肉蛋", default_weight=150, aliases=["花甲", "蚬子"]),
         food("午餐肉", 229, 12.5, 19, 2.5, 0, 950, category="肉蛋", default_weight=80, aliases=["罐头午餐肉"]),

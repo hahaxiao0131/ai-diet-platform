@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 GoalType = Literal["fat_loss", "muscle_gain", "maintain", "structure"]
@@ -14,6 +14,7 @@ Scenario = Literal["home", "quick", "convenience"]
 AIResponseKind = Literal[
     "explanation",
     "meal_record_proposal",
+    "consumption_advice",
     "plan_recommendation",
     "food_replacement",
     "food_nutrition",
@@ -24,6 +25,21 @@ AIResponseKind = Literal[
 ]
 AgentConfidence = Literal["high", "medium", "low"]
 AgentDecisionStage = Literal["inform", "clarify", "propose", "safety"]
+IntentName = Literal[
+    "meal_record",
+    "consumption_advice",
+    "food_nutrition",
+    "plan_recommendation",
+    "food_replacement",
+    "memory_preference",
+    "protein_explanation",
+    "dietary_knowledge",
+    "safety",
+    "clarification",
+]
+SpeechAct = Literal["statement", "question", "command", "hypothetical"]
+TemporalStatus = Literal["completed", "current", "planned", "hypothetical", "unknown"]
+IntentModality = Literal["actual", "possible", "desired", "conditional", "unknown"]
 
 
 class PhoneCodeRequest(BaseModel):
@@ -211,6 +227,30 @@ class AIChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=500)
 
 
+class IntentFoodEntity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    raw_name: str
+    quantity: float | None
+    unit: str | None
+    explicit_weight_g: float | None
+
+
+class IntentInterpretation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    intent: IntentName
+    speech_act: SpeechAct
+    temporal_status: TemporalStatus
+    modality: IntentModality
+    foods: list[IntentFoodEntity]
+    meal_type: MealType | None
+    should_create_action: bool
+    requires_clarification: bool
+    clarification_question: str | None
+    confidence: AgentConfidence
+
+
 class AgentContext(BaseModel):
     recorded_meals: int
     expected_meals: int
@@ -235,6 +275,16 @@ class AgentMemory(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class AgentToolCallAudit(BaseModel):
+    name: str
+    effect: Literal["read_only", "proposal", "confirmed_write"]
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    success: bool
+    result_summary: str | None = None
+    error_code: str | None = None
+    cached: bool = False
+
+
 class AgentTrace(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     profile_id: UUID
@@ -245,6 +295,18 @@ class AgentTrace(BaseModel):
     context_snapshot: dict[str, Any]
     outcome: str
     requires_confirmation: bool = False
+    provider: str = "rule"
+    model: str | None = None
+    tool_calls: list[AgentToolCallAudit] = Field(default_factory=list)
+    fallback_used: bool = False
+    fallback_reason: str | None = None
+    latency_ms: int | None = None
+    structured_intent: dict[str, Any] | None = None
+    speech_act: SpeechAct | None = None
+    temporal_status: TemporalStatus | None = None
+    should_create_action: bool | None = None
+    final_action_allowed: bool | None = None
+    intent_conflict: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -289,6 +351,13 @@ class AIChatResponse(BaseModel):
     context: AgentContext | None = None
     needs_clarification: bool = False
     clarification_options: list[str] = Field(default_factory=list)
+    tool_calls: list[AgentToolCallAudit] = Field(default_factory=list)
+    provider: str = "rule"
+    model: str | None = None
+    latency_ms: int | None = None
+    fallback_used: bool = False
+    fallback_reason: str | None = None
+    intent_conflict: str | None = None
 
 
 class MealPlan(BaseModel):

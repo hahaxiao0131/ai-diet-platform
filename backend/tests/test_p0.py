@@ -542,6 +542,18 @@ def test_ai_agent_answers_food_nutrition_and_general_diet_questions():
     assert gummy_record["action"]["payload"]["items"][0]["weight_g"] == 9
     assert gummy_record["action"]["confidence"] == "low"
 
+    xiaolongbao_record = client.post(
+        "/api/v1/ai/chat",
+        json={"message": "我今天中午吃了四个小笼包"},
+        headers=headers,
+    ).json()["data"]
+    assert xiaolongbao_record["kind"] == "meal_record_proposal"
+    assert xiaolongbao_record["needs_clarification"] is False
+    assert xiaolongbao_record["action"]["payload"]["items"][0]["name"] == "小笼包"
+    assert xiaolongbao_record["action"]["payload"]["items"][0]["weight_g"] == 120
+    assert xiaolongbao_record["action"]["preview_nutrition"]["energy_kcal"] == 276
+    assert any("每个约 30g" in item for item in xiaolongbao_record["action"]["assumptions"])
+
 
 def test_barcode_source_is_cached_and_user_label_has_priority(monkeypatch):
     barcode = "6901234567892"

@@ -252,6 +252,16 @@ export type AIAction = {
 
 export type AgentConfidence = "high" | "medium" | "low";
 
+export type AgentToolCallAudit = {
+  name: string;
+  effect: "read_only" | "proposal" | "confirmed_write";
+  arguments: Record<string, unknown>;
+  success: boolean;
+  result_summary: string | null;
+  error_code: string | null;
+  cached: boolean;
+};
+
 export type AgentContext = {
   recorded_meals: number;
   expected_meals: number;
@@ -279,7 +289,7 @@ export type AgentFeedback = {
 };
 
 export type AIChatResponse = {
-  kind: "explanation" | "meal_record_proposal" | "plan_recommendation" | "food_replacement" | "food_nutrition" | "dietary_knowledge" | "memory_proposal" | "clarification" | "safety";
+  kind: "explanation" | "meal_record_proposal" | "consumption_advice" | "plan_recommendation" | "food_replacement" | "food_nutrition" | "dietary_knowledge" | "memory_proposal" | "clarification" | "safety";
   message: string;
   basis: string[];
   suggestions: string[];
@@ -291,4 +301,11 @@ export type AIChatResponse = {
   context: AgentContext | null;
   needs_clarification: boolean;
   clarification_options: string[];
+  tool_calls: AgentToolCallAudit[];
+  provider: string;
+  model: string | null;
+  latency_ms: number | null;
+  fallback_used: boolean;
+  fallback_reason: string | null;
+  intent_conflict: string | null;
 };

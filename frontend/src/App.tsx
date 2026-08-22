@@ -825,10 +825,31 @@ function agentAnswerLabel(response: AIChatResponse) {
   if (response.decision_stage === "propose") return "等待你确认";
   if (response.decision_stage === "safety") return "安全边界";
   if (response.kind === "food_nutrition") return "食物数据库";
+  if (response.kind === "consumption_advice") return "计划摄入评估";
   if (response.kind === "dietary_knowledge") return "饮食知识";
   if (response.kind === "food_replacement") return "食物替换建议";
   return "基于今日记录";
 }
+
+function agentProviderLabel(response: AIChatResponse) {
+  if (response.provider === "deepseek") return "DeepSeek";
+  if (response.provider.startsWith("deepseek+")) return "DeepSeek + 后端校验";
+  if (response.provider === "openai") return "OpenAI";
+  if (response.provider.startsWith("openai+")) return "OpenAI + 后端校验";
+  if (response.provider === "safety_guard") return "安全守卫";
+  return "本地规则";
+}
+
+const agentToolLabels: Record<string, string> = {
+  get_today_context: "今日数据",
+  search_food: "食物查询",
+  convert_food_portion: "份量换算",
+  calculate_nutrition: "营养计算",
+  propose_meal_record: "待确认记餐",
+  preview_meal_plans: "餐食预览",
+  propose_memory: "待确认偏好",
+  get_recent_meals: "近期记录",
+};
 
 function AssistantPage({ today, onPlans, onRecorded }: { today: TodaySummary | null; onPlans: () => void; onRecorded: () => Promise<void> }) {
   const prompts = ["200g挂面的热量是多少？", "减脂可以吃主食吗？", "今天还能吃什么？", "午餐吃了150克米饭和两个鸡蛋"];
@@ -938,9 +959,12 @@ function AssistantPage({ today, onPlans, onRecorded }: { today: TodaySummary | n
         <div className="message-body">
           {message.text && <p>{message.text}</p>}
           {message.response && <>
-            <div className={`agent-answer-meta ${message.response.decision_stage}`}><span>{agentAnswerLabel(message.response)}</span><span>置信度 {message.response.confidence === "high" ? "高" : message.response.confidence === "medium" ? "中" : "低"}</span></div>
+            <div className={`agent-answer-meta ${message.response.decision_stage}`}><span>{agentAnswerLabel(message.response)}</span><span className="agent-provider">{agentProviderLabel(message.response)}</span><span>置信度 {message.response.confidence === "high" ? "高" : message.response.confidence === "medium" ? "中" : "低"}</span></div>
             <p>{message.response.message}</p>
             {message.response.basis.length > 0 && <div className="evidence-list">{message.response.basis.map((item) => <span key={item}><Check size={13} />{item}</span>)}</div>}
+            {message.response.tool_calls.length > 0 && <div className="tool-audit"><span>数据过程</span><strong>{message.response.tool_calls.map((call) => agentToolLabels[call.name] ?? call.name).join(" · ")}</strong></div>}
+            {message.response.fallback_used && <div className="agent-fallback"><Info size={13} />模型服务暂时不可用，本次已由本地饮食规则完成。</div>}
+            {message.response.intent_conflict && <div className="agent-fallback"><ShieldAlert size={13} />已阻止将咨询、计划或假设内容写入饮食记录。</div>}
             {message.response.clarification_options.length > 0 && <div className="clarification-options">{message.response.clarification_options.map((option) => <button key={option} disabled={sending} onClick={() => sendMessage(option)}><span>{option}</span><ArrowRight size={14} /></button>)}</div>}
             {message.response.action && <div className={`ai-action-card ${message.response.action.status}`}>
               <div className="action-card-heading"><div><span className="eyebrow">待确认动作</span><strong>{message.response.action.title}</strong></div><FileText size={18} /></div>

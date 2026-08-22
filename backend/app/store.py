@@ -3,13 +3,18 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from .food_catalog import extended_foods
 from .models import AgentFeedback, AgentMemory, AgentTrace, AIAction, Food, GoalProposal, Meal, MealDraft, MealPlan, Profile
+
+
+FOOD_NAMESPACE = UUID("2fa324e8-4df3-47f8-a39d-6c6de01bcd8c")
 
 
 def seeded_foods() -> list[Food]:
@@ -30,6 +35,7 @@ def seeded_foods() -> list[Food]:
         food_type="ingredient",
     ):
         return Food(
+            id=uuid5(FOOD_NAMESPACE, f"local-seed:{name}"),
             name=name,
             aliases=aliases or [],
             default_unit="1份",
@@ -97,12 +103,18 @@ def seeded_foods() -> list[Food]:
         food("番茄炒蛋", 132, 6.8, 7.2, 8.5, 1.2, 320, category="常见菜", default_weight=180, vegetable=55, food_type="standard_dish"),
         food("清炒青菜", 70, 2.2, 3.5, 6.5, 2.8, 360, category="常见菜", default_weight=180, vegetable=85, aliases=["炒青菜"], food_type="standard_dish"),
     ]
-    return foods + extended_foods()
+    extended = [
+        item.model_copy(update={"id": uuid5(FOOD_NAMESPACE, f"local-seed:{item.name}")})
+        for item in extended_foods()
+    ]
+    return foods + extended
 
 
 class MemoryStore:
     def __init__(self, persistence_path: Path | None = None) -> None:
+        self.backend_name = "memory" if persistence_path is None else "json"
         self.persistence_path = persistence_path
+        self._write_lock = RLock()
         self.users: dict[str, UUID] = {}
         self.profiles: dict[UUID, Profile] = {}
         self.foods: list[Food] = seeded_foods()
@@ -122,6 +134,10 @@ class MemoryStore:
     def persist(self) -> None:
         if self.persistence_path is None:
             return
+        with self._write_lock:
+            self._persist_json()
+
+    def _persist_json(self) -> None:
         payload = {
             "version": 1,
             "users": {key: str(value) for key, value in self.users.items()},
@@ -148,6 +164,12 @@ class MemoryStore:
         if path.exists():
             shutil.copy2(path, backup)
         temporary.replace(path)
+
+    @contextmanager
+    def atomic(self):
+        """Serialize a state change and its persist call inside this process."""
+        with self._write_lock:
+            yield
 
     def _load(self) -> None:
         if self.persistence_path is None or not self.persistence_path.exists():
@@ -229,4 +251,21 @@ else:
     configured_path = os.getenv("DIET_LOCAL_STORE_PATH")
     store_path = Path(configured_path) if configured_path else Path(__file__).resolve().parent.parent / "data" / "local_store.json"
 
-store = MemoryStore(store_path)
+def build_store_from_env():
+    backend = os.getenv("DIET_STORAGE_BACKEND", "json").strip().lower()
+    if os.getenv("DIET_DISABLE_PERSISTENCE") == "1":
+        return MemoryStore(None)
+    if backend in {"postgres", "postgresql", "database"}:
+        database_url = os.getenv("DATABASE_URL", "").strip()
+        if not database_url:
+            raise RuntimeError("DIET_STORAGE_BACKEND=postgresql 时必须配置 DATABASE_URL")
+        from .database_store import DatabaseStore
+
+        auto_create = os.getenv("DIET_DB_AUTO_CREATE", "1") == "1"
+        return DatabaseStore(database_url, auto_create=auto_create)
+    if backend != "json":
+        raise RuntimeError(f"不支持的 DIET_STORAGE_BACKEND: {backend}")
+    return MemoryStore(store_path)
+
+
+store = build_store_from_env()
