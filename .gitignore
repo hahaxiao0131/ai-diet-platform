@@ -10,8 +10,12 @@ backend/data/*.bak
 backend/data/*.tmp
 backend/data/*.db
 backend/data/*.sqlite*
+backend/data/chroma/
+backend/.tmp/
 /work/docs/
 /work/*.log
+backend/work/
+frontend/work/
 .env
 .env.*
 !.env.example

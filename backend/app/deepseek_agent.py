@@ -53,10 +53,15 @@ class DeepSeekSettings:
         thinking = os.getenv("DEEPSEEK_THINKING", "disabled").strip().lower() or "disabled"
         if thinking not in {"enabled", "disabled"}:
             thinking = "disabled"
+        base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+        # DeepSeek's legacy /beta endpoint is not the base URL for regular
+        # Chat Completions. Keep older local .env files working automatically.
+        if base_url == "https://api.deepseek.com/beta":
+            base_url = "https://api.deepseek.com"
         return cls(
             provider=os.getenv("DIET_AI_PROVIDER", "rule").strip().lower(),
             api_key=os.getenv("DEEPSEEK_API_KEY") or None,
-            base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
+            base_url=base_url,
             model=os.getenv("DEEPSEEK_MODEL") or None,
             timeout_seconds=timeout,
             max_tool_turns=max_turns,
@@ -96,6 +101,7 @@ def _function_tool(name: str, description: str, model: type[BaseModel]) -> dict[
             "name": name,
             "description": description,
             "parameters": model.model_json_schema(),
+            "strict": True,
         },
     }
 
@@ -109,6 +115,7 @@ def _business_tools(registry: AgentToolRegistry) -> list[dict[str, Any]]:
                 "name": item["name"],
                 "description": item["description"],
                 "parameters": item["parameters"],
+                "strict": True,
             },
         })
     return tools
@@ -282,7 +289,14 @@ class DeepSeekAgentProvider:
                 final_calls = [call for call in calls if _function_value(call, "name") == FINAL_TOOL_NAME]
                 business_calls = [call for call in calls if _function_value(call, "name") != FINAL_TOOL_NAME]
                 if final_calls and not business_calls:
-                    final_payload = _normalize_null_fields(_arguments(final_calls[0]), {"action_id", "cta"})
+                    try:
+                        final_payload = _normalize_null_fields(_arguments(final_calls[0]), {"action_id", "cta"})
+                    except AgentProviderError:
+                        if turn >= self.settings.max_tool_turns:
+                            raise
+                        messages.append(_message_dict(assistant_message))
+                        messages.append(self._format_error_feedback(final_calls[0]))
+                        continue
                     final = AgentFinalAnswer.model_validate(final_payload)
                     action = tools.proposal(final.action_id)
                     if final.action_id is None and final.decision_stage == "propose":
@@ -303,6 +317,7 @@ class DeepSeekAgentProvider:
 
                 messages.append(_message_dict(assistant_message))
                 new_call_count = 0
+                recovery_requested = False
                 for call in calls:
                     call_id = str(_value(call, "id") or "")
                     name = str(_function_value(call, "name") or "")
@@ -313,7 +328,20 @@ class DeepSeekAgentProvider:
                             "content": json.dumps({"accepted": False, "reason": "请先处理同轮业务工具，再单独提交最终回答"}, ensure_ascii=False),
                         })
                         continue
-                    arguments = _arguments(call)
+                    try:
+                        arguments = _arguments(call)
+                    except AgentProviderError:
+                        recovery_requested = True
+                        messages.append(self._format_error_feedback(call))
+                        audits.append(AgentToolCallAudit(
+                            name=name or "unknown_tool",
+                            effect=tools.effect_for(name),
+                            arguments={},
+                            success=False,
+                            error_code="INVALID_JSON_ARGUMENTS",
+                            result_summary="模型工具参数格式错误，已要求模型修正",
+                        ))
+                        continue
                     signature = f"{name}:{json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
                     cached = signature in cached_results
                     if cached:
@@ -328,7 +356,7 @@ class DeepSeekAgentProvider:
                         "tool_call_id": call_id,
                         "content": result.model_dump_json(),
                     })
-                if business_calls and new_call_count == 0:
+                if business_calls and new_call_count == 0 and not recovery_requested:
                     raise AgentProviderError("TOOL_LOOP", "模型重复调用相同工具且没有产生新进展")
         except AgentProviderError as exc:
             exc.tool_calls = list(audits)
@@ -346,6 +374,20 @@ class DeepSeekAgentProvider:
             raise error from exc
 
         raise AgentProviderError("TOOL_TURN_LIMIT", "工具调用已达到轮数上限")
+
+    @staticmethod
+    def _format_error_feedback(call: Any) -> dict[str, Any]:
+        return {
+            "role": "tool",
+            "tool_call_id": str(_value(call, "id") or ""),
+            "content": json.dumps({
+                "accepted": False,
+                "error": {
+                    "code": "INVALID_JSON_ARGUMENTS",
+                    "message": "工具参数必须是符合函数 Schema 的完整 JSON 对象，请修正后重新调用。",
+                },
+            }, ensure_ascii=False),
+        }
 
 
 def build_deepseek_intent_from_env(client: Any | None = None) -> DeepSeekIntentProvider | None:

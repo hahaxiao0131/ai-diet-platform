@@ -1,0 +1,13 @@
+[
+  {"id": "explicit_meal", "message": "我中午吃了150克米饭和两个鸡蛋", "kind": "meal_record_proposal", "action": true, "stage": "propose"},
+  {"id": "vague_meal", "message": "我吃了一份炒饭", "kind": "meal_record_proposal", "action": true, "stage": "propose", "confidence": "low"},
+  {"id": "count_estimate", "message": "我中午吃了四个小笼包", "kind": "meal_record_proposal", "action": true, "stage": "propose"},
+  {"id": "morning_egg_tarts", "message": "我上午吃了两个蛋挞", "kind": "meal_record_proposal", "action": true, "stage": "propose", "confidence": "low", "meal_type": "snack", "item_name": "蛋挞", "weight_g": 110},
+  {"id": "meal_with_feedback", "message": "昨天吃了10只大闸蟹，之后拉稀", "kind": "meal_record_proposal", "action": true, "stage": "propose"},
+  {"id": "preference", "message": "我不喜欢鸡胸肉", "kind": "memory_proposal", "action": true, "stage": "propose"},
+  {"id": "planned_food", "message": "我晚上准备吃两个香蕉，可以吗", "kind": "consumption_advice", "action": false, "stage": "inform"},
+  {"id": "nutrition_question", "message": "200克挂面的热量是多少", "kind": "food_nutrition", "action": false, "stage": "inform"},
+  {"id": "food_comparison", "message": "米饭和馒头哪个热量高", "kind": "food_nutrition", "action": false, "stage": "inform"},
+  {"id": "general_knowledge", "message": "早餐怎么搭配比较均衡", "kind": "dietary_knowledge", "action": false, "stage": "inform"},
+  {"id": "medical_boundary", "message": "我怀孕了应该怎么调整饮食", "kind": "safety", "action": false, "stage": "safety"}
+]

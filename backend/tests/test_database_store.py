@@ -2,9 +2,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import inspect
+from sqlalchemy import delete, inspect, select
 
 from app.database_store import DatabaseStore
+from app.db_models import AgentFeedbackRow, AgentMemoryRow, AgentTraceRow, AIActionRow, FoodRow, GoalRow, MealDraftRow, MealPlanRow, MealRow, ProfileRow, SessionRow, UserIdentityRow, UserRow, WeightRecordRow
 from app.models import Food, Meal, MealItem, Nutrition
 from app.services import calculate_goal
 from app.store import MemoryStore
@@ -76,3 +77,52 @@ def test_database_schema_has_ownership_and_action_tables(request):
     request.addfinalizer(store.engine.dispose)
     tables = set(inspect(store.engine).get_table_names())
     assert {"users", "profiles", "foods", "meals", "ai_actions", "agent_traces", "sessions"} <= tables
+
+
+def test_database_store_merges_new_seed_catalog_entries(request):
+    url = temporary_database(request, "catalog_merge")
+    first = DatabaseStore(url)
+    request.addfinalizer(first.engine.dispose)
+    beef_pie = next(food for food in first.foods if food.name == "牛肉馅饼")
+    with first._session_factory.begin() as session:
+        session.execute(delete(FoodRow).where(FoodRow.id == str(beef_pie.id)))
+    first.engine.dispose()
+
+    restored = DatabaseStore(url, auto_create=False)
+    request.addfinalizer(restored.engine.dispose)
+
+    assert next(food for food in restored.foods if food.name == "牛肉馅饼").id == beef_pie.id
+    with restored._session_factory() as session:
+        assert session.get(FoodRow, str(beef_pie.id)) is not None
+
+
+def test_database_store_delete_user_removes_owned_rows_in_one_transaction(request):
+    url = temporary_database(request, "delete_user")
+    first = DatabaseStore(url)
+    request.addfinalizer(first.engine.dispose)
+    user_id = first.get_or_create_user(f"delete-user-{uuid4().hex}")
+    profile = first.get_profile(user_id)
+    profile.onboarding_completed = True
+    custom_food = Food(
+        name="待删除食品",
+        food_type="custom",
+        source="user_nutrition_label",
+        tags=[f"profile:{profile.id}"],
+        nutrition_per_100g=Nutrition(energy_kcal=100, protein_g=10),
+    )
+    first.foods.append(custom_food)
+    item = MealItem(food_id=custom_food.id, name=custom_food.name, weight_g=100, nutrition=custom_food.nutrition_per_100g)
+    meal = Meal(profile_id=profile.id, meal_type="lunch", eaten_at=datetime.now(timezone.utc), record_source="manual", items=[item], nutrition=item.nutrition)
+    first.meals[meal.id] = meal
+    first.sessions["delete-token-hash"] = {"user_id": str(user_id), "expires_at": "2099-01-01T00:00:00+00:00"}
+    first.persist()
+
+    result = first.delete_user(user_id)
+    assert result and result["counts"]["meals"] == 1
+    assert profile.id not in first.profiles
+    assert any(food.name == "米饭" for food in first.foods)
+    with first._session_factory() as session:
+        for row_type in (ProfileRow, GoalRow, MealDraftRow, MealRow, MealPlanRow, AIActionRow, AgentMemoryRow, AgentTraceRow, AgentFeedbackRow, WeightRecordRow, SessionRow, UserIdentityRow, UserRow):
+            assert session.scalars(select(row_type)).all() == []
+        assert session.get(FoodRow, str(custom_food.id)) is None
+        assert session.get(FoodRow, str(next(food for food in first.foods if food.name == "米饭").id)) is not None

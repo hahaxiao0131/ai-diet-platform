@@ -22,8 +22,9 @@ from .models import (
     Scenario,
 )
 from .nutrition import build_today, calculate_meal, scale_nutrition, sum_nutrition
+from .online_nutrition import OnlineNutritionProvider, validate_online_source_url
 from .providers import AdviceProvider, RuleBasedAssistantProvider
-from .risk import detect_risks
+from .risk import detect_risks, food_allergen_context, recommendation_avoidances
 
 
 ToolEffect = Literal["read_only", "proposal", "confirmed_write"]
@@ -76,15 +77,41 @@ class FoodToolRecord(BaseModel):
     aliases: list[str]
     barcode: str | None
     data_source: str
+    source_url: str | None = None
+    brand: str | None = None
     nutrition_per_100g: Nutrition
     default_weight_g: float | None
     confidence: Literal["high", "medium", "low"]
+    allergens: list[str] = Field(default_factory=list)
 
 
 class SearchFoodOutput(BaseModel):
     matches: list[FoodToolRecord]
     clarification_required: bool
     message: str
+    lookup_provider: str = "local_food_catalog"
+    online_attempted: bool = False
+
+
+class SearchOnlineNutritionInput(ToolInput):
+    query: str | None = Field(default=None, max_length=160, description="本地食物库没有精确结果时使用的食物或产品名称")
+    brand: str | None = Field(default=None, max_length=120, description="已知品牌；未知时传 null")
+    barcode: str | None = Field(default=None, pattern=r"^\d{8,14}$", description="包装条码；未知时传 null")
+    limit: int = Field(default=3, ge=1, le=5)
+
+    @model_validator(mode="after")
+    def require_lookup_key(self):
+        if not any(value and value.strip() for value in [self.query, self.brand, self.barcode]):
+            raise ValueError("query、brand 或 barcode 至少提供一个")
+        return self
+
+
+class SearchOnlineNutritionOutput(BaseModel):
+    matches: list[FoodToolRecord]
+    provider: str
+    clarification_required: bool
+    message: str
+    error_code: str | None = None
 
 
 class ConvertFoodPortionInput(ToolInput):
@@ -97,6 +124,7 @@ class ConvertFoodPortionOutput(BaseModel):
     food_id: UUID
     standard_name: str
     weight_g: float | None
+    estimated_weight_range_g: list[float] | None = None
     assumption: str | None
     confidence: Literal["high", "medium", "low"]
     clarification_required: bool
@@ -120,12 +148,21 @@ class CalculateNutritionOutput(BaseModel):
 class MealRecordToolItem(ToolInput):
     food_id: UUID
     weight_g: float = Field(gt=0, le=10000)
+    estimated_weight_range_g: list[float] | None = Field(min_length=2, max_length=2, description="估算范围；明确克重时传 null")
+
+
+class MealRecordBodyFeedback(ToolInput):
+    symptoms: list[str] = Field(max_length=12)
+    severity: Literal["none", "mild", "moderate", "severe"]
+    occurred_after_minutes: int | None = Field(ge=0, le=10080, description="不清楚时传 null")
+    notes: str | None = Field(max_length=300, description="没有补充描述时传 null")
 
 
 class ProposeMealRecordInput(ToolInput):
     meal_type: MealType
     items: list[MealRecordToolItem] = Field(min_length=1, max_length=20)
     assumptions: list[str] = Field(max_length=20)
+    body_feedback: MealRecordBodyFeedback | None = Field(description="未描述餐后体感时传 null")
 
 
 class ProposalOutput(BaseModel):
@@ -218,6 +255,10 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         "按名称、别名或条码搜索当前用户可见的食物。后续工具只能使用这里返回的 food_id。",
         "read_only", SearchFoodInput, SearchFoodOutput, "_search_food",
     ),
+    "search_online_nutrition": ToolDefinition(
+        "仅当 search_food 没有精确匹配时，按条码、品牌或名称查询带原始来源链接的联网营养数据。结果只是会话内候选，不会直接写入食物库。",
+        "read_only", SearchOnlineNutritionInput, SearchOnlineNutritionOutput, "_search_online_nutrition",
+    ),
     "convert_food_portion": ToolDefinition(
         "用确定性规则把克、个、碗、杯、片、颗等份量换算为克，并返回假设和置信度。",
         "read_only", ConvertFoodPortionInput, ConvertFoodPortionOutput, "_convert_food_portion",
@@ -257,6 +298,7 @@ class AgentToolRegistry:
         meals: list[Meal],
         memories: list[AgentMemory],
         advice_provider: AdviceProvider,
+        online_nutrition_provider: OnlineNutritionProvider | None = None,
     ) -> None:
         self.profile = profile
         self.goal = goal
@@ -264,7 +306,9 @@ class AgentToolRegistry:
         self.meals = [meal for meal in meals if meal.profile_id == profile.id and meal.status == "active"]
         self.memories = [memory for memory in memories if memory.profile_id == profile.id and memory.status == "active"]
         self.advice_provider = advice_provider
+        self.online_nutrition_provider = online_nutrition_provider
         self._foods_by_id = {food.id: food for food in self.foods}
+        self._persistent_food_ids = set(self._foods_by_id)
         self._proposals: dict[UUID, AIAction] = {}
         self._pending_meal_nutrition: list[Nutrition] = []
 
@@ -378,18 +422,62 @@ class AgentToolRegistry:
             matches = [food for food in self.foods if food.barcode == payload.barcode.strip()][:payload.limit]
         else:
             matches = search_catalog(self.foods, payload.query or "", payload.limit)
-        records = [self._food_record(food) for food in matches]
-        if not records:
-            return SearchFoodOutput(matches=[], clarification_required=True, message="没有找到匹配食物，请补充名称、品牌或营养标签")
         query = normalize_search_text(payload.query or "")
         exact = bool(payload.barcode) or any(
             query in {normalize_search_text(food.name), *(normalize_search_text(alias) for alias in food.aliases)}
             for food in matches
         )
+        exact_matches = [
+            food for food in matches
+            if query in {normalize_search_text(food.name), *(normalize_search_text(alias) for alias in food.aliases)}
+        ] if query else matches
+        local_result_is_low_confidence = bool(exact_matches) and all(
+            food.confidence == "low" and food.source not in {
+                "user_nutrition_label", "open_food_facts", "deepseek_web_search",
+            }
+            for food in exact_matches
+        )
+        should_try_online = self.online_nutrition_provider is not None and (
+            not exact or not matches or local_result_is_low_confidence
+        )
+        if should_try_online:
+            try:
+                online = self._search_online_nutrition(SearchOnlineNutritionInput(
+                    query=payload.query,
+                    brand=None,
+                    barcode=payload.barcode,
+                    limit=min(payload.limit, 5),
+                ))
+            except AgentToolFailure:
+                online = None
+            if online is not None and online.matches:
+                return SearchFoodOutput(
+                    matches=online.matches,
+                    clarification_required=False,
+                    message=f"已优先使用联网来源：{online.message}",
+                    lookup_provider=online.provider,
+                    online_attempted=True,
+                )
+
+        records = [self._food_record(food) for food in matches]
+        if not records:
+            return SearchFoodOutput(
+                matches=[],
+                clarification_required=True,
+                message="联网和本地食物库都没有找到可靠结果，请补充名称、品牌或营养标签" if should_try_online else "没有找到匹配食物，请补充名称、品牌或营养标签",
+                online_attempted=should_try_online,
+            )
         return SearchFoodOutput(
             matches=records,
-            clarification_required=len(records) > 1 and not exact,
-            message="已找到可用食物" if exact else "找到多个可能结果，请按 standard_name 确认",
+            clarification_required=not exact,
+            message=(
+                "已找到可用食物"
+                if exact
+                else "联网未找到可靠来源；本地只找到近似食物，不能直接替代原食物，请确认名称或补充营养标签"
+                if should_try_online
+                else "只找到近似食物，不能直接替代原食物，请确认名称或补充营养标签"
+            ),
+            online_attempted=should_try_online,
         )
 
     @staticmethod
@@ -400,9 +488,44 @@ class AgentToolRegistry:
             aliases=food.aliases,
             barcode=food.barcode,
             data_source=food.source,
+            source_url=food.source_url,
+            brand=food.brand,
             nutrition_per_100g=food.nutrition_per_100g,
             default_weight_g=food.default_weight_g,
             confidence=food.confidence,
+            allergens=food.allergens,
+        )
+
+    def _search_online_nutrition(self, payload: SearchOnlineNutritionInput) -> SearchOnlineNutritionOutput:
+        if self.online_nutrition_provider is None:
+            raise AgentToolFailure(
+                "ONLINE_SEARCH_UNAVAILABLE",
+                "联网营养查询未配置，请补充品牌、条码或营养标签",
+                clarification_required=True,
+            )
+        result = self.online_nutrition_provider.search(
+            query=payload.query.strip() if payload.query else None,
+            brand=payload.brand.strip() if payload.brand else None,
+            barcode=payload.barcode.strip() if payload.barcode else None,
+            limit=payload.limit,
+        )
+        records: list[FoodToolRecord] = []
+        for food in result.foods[:payload.limit]:
+            try:
+                validate_online_source_url(food.source_url or "")
+            except ValueError:
+                continue
+            # The food remains scoped to this one agent run until the user
+            # confirms a proposal containing it.
+            self.foods.append(food)
+            self._foods_by_id[food.id] = food
+            records.append(self._food_record(food))
+        return SearchOnlineNutritionOutput(
+            matches=records,
+            provider=result.provider,
+            clarification_required=not records,
+            message=result.message,
+            error_code=result.error_code,
         )
 
     def _convert_food_portion(self, payload: ConvertFoodPortionInput) -> ConvertFoodPortionOutput:
@@ -412,6 +535,7 @@ class AgentToolRegistry:
                 food_id=food.id,
                 standard_name=food.name,
                 weight_g=round(payload.amount, 2),
+                estimated_weight_range_g=[round(payload.amount, 2), round(payload.amount, 2)],
                 assumption=None,
                 confidence="high",
                 clarification_required=False,
@@ -422,6 +546,7 @@ class AgentToolRegistry:
                 food_id=food.id,
                 standard_name=food.name,
                 weight_g=round(payload.amount, 2),
+                estimated_weight_range_g=[round(payload.amount * 0.9, 2), round(payload.amount * 1.1, 2)],
                 assumption=f"{food.name}暂按 1ml 约等于 1g 换算",
                 confidence="medium",
                 clarification_required=False,
@@ -434,6 +559,10 @@ class AgentToolRegistry:
                 food_id=food.id,
                 standard_name=food.name,
                 weight_g=round(payload.amount * per_unit, 2),
+                estimated_weight_range_g=[
+                    round(payload.amount * per_unit * (0.65 if crab_estimate else 0.8), 2),
+                    round(payload.amount * per_unit * (1.35 if crab_estimate else 1.2), 2),
+                ],
                 assumption=(
                     "螃蟹按每只可食部分约 50g 估算，个体大小和可食率差异较大"
                     if crab_estimate
@@ -448,10 +577,11 @@ class AgentToolRegistry:
             food_id=food.id,
             standard_name=food.name,
             weight_g=round(payload.amount * estimate, 2) if estimate else None,
+            estimated_weight_range_g=[round(payload.amount * estimate * 0.7, 2), round(payload.amount * estimate * 1.3, 2)] if estimate else None,
             assumption=f"{food.name}每份暂按常用份量 {estimate:g}g 估算" if estimate else None,
             confidence="low",
-            clarification_required=True,
-            clarification_message=f"{food.name}的“{payload.unit}”缺少可靠换算，请补充克数或确认常用份量",
+            clarification_required=estimate is None,
+            clarification_message=f"{food.name}的“{payload.unit}”缺少可靠换算，请补充更具体的份量" if estimate is None else None,
         )
 
     def _calculate_nutrition(self, payload: CalculateNutritionInput) -> CalculateNutritionOutput:
@@ -468,17 +598,34 @@ class AgentToolRegistry:
     def _propose_meal_record(self, payload: ProposeMealRecordInput) -> ProposalOutput:
         meal_items: list[MealItem] = []
         action_items: list[dict[str, Any]] = []
+        pending_foods: list[dict[str, Any]] = []
+        pending_food_ids: set[UUID] = set()
         confidence: Literal["high", "medium", "low"] = "high"
         for selected in payload.items:
             food = self._food_or_fail(selected.food_id)
             nutrition = scale_nutrition(food.nutrition_per_100g, selected.weight_g)
-            meal_items.append(MealItem(food_id=food.id, name=food.name, weight_g=selected.weight_g, nutrition=nutrition))
+            meal_items.append(MealItem(
+                food_id=food.id,
+                name=food.name,
+                weight_g=selected.weight_g,
+                nutrition=nutrition,
+                estimated_weight_range_g=selected.estimated_weight_range_g,
+            ))
             action_items.append({
                 "food_id": str(food.id),
                 "name": food.name,
                 "weight_g": selected.weight_g,
                 "consumed_ratio": 1,
+                "estimated_weight_range_g": selected.estimated_weight_range_g,
+                "data_source": food.source,
+                "source_url": food.source_url,
+                "brand": food.brand,
+                "confidence": food.confidence,
+                "allergens": food.allergens,
             })
+            if food.id not in self._persistent_food_ids and food.id not in pending_food_ids:
+                pending_foods.append(food.model_dump(mode="json"))
+                pending_food_ids.add(food.id)
             if food.confidence == "low":
                 confidence = "low"
             elif food.confidence == "medium" and confidence == "high":
@@ -491,7 +638,12 @@ class AgentToolRegistry:
             action_type="create_meal",
             title="确认这次饮食记录",
             summary="、".join(f"{item.name} {item.weight_g:g}g" for item in meal_items),
-            payload={"meal_type": payload.meal_type, "items": action_items},
+            payload={
+                "meal_type": payload.meal_type,
+                "items": action_items,
+                **({"pending_foods": pending_foods} if pending_foods else {}),
+                **({"body_feedback": payload.body_feedback.model_dump(mode="json")} if payload.body_feedback else {}),
+            },
             preview_nutrition=preview,
             confidence=confidence,
             assumptions=payload.assumptions,
@@ -510,7 +662,7 @@ class AgentToolRegistry:
         })
         avoidances = [memory.value for memory in self.memories if memory.category == "avoidance"]
         options = self.advice_provider.propose(
-            {"remaining": effective_remaining.model_dump(), "avoidances": [*self.profile.hard_exclusions, *avoidances]},
+            {"remaining": effective_remaining.model_dump(), "avoidances": [*recommendation_avoidances(self.profile, self.foods), *avoidances]},
             self.foods,
         )
         if payload.scenario:
@@ -527,13 +679,22 @@ class AgentToolRegistry:
                 for entry in option["items"]
             ]
             nutrition = calculate_meal(items)
+            risks = detect_risks(
+                self.profile,
+                [item.name for item in items],
+                nutrition,
+                mode="recommendation",
+                food_allergens=food_allergen_context(items, [entry["food"] for entry in option["items"]]),
+            )
+            if any(risk["level"] == "block" for risk in risks):
+                continue
             plans.append(MealPlanCandidate(
                 title=option["title"],
                 scenario=option["scenario"],
                 items=items,
                 nutrition=nutrition,
                 reason=option["reason"],
-                risks=detect_risks(self.profile, [item.name for item in items], nutrition),
+                risks=risks,
             ))
         return PreviewMealPlansOutput(plans=plans, remaining_before=effective_remaining, confidence=today.confidence)
 

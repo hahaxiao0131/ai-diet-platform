@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app import main as main_module
 from app.agent_tools import AgentToolRegistry
 from app.main import app
-from app.models import Meal, MealItem, Nutrition, Profile
+from app.models import AgentContext, AIAction, AIChatResponse, Meal, MealItem, Nutrition, Profile
 from app.openai_agent import (
     AgentProviderError,
     AgentSettings,
@@ -143,10 +143,11 @@ def test_tools_calculate_rice_and_eggs_from_backend_and_only_propose_record():
     proposal = registry.execute("propose_meal_record", {
         "meal_type": "lunch",
         "items": [
-            {"food_id": rice["food_id"], "weight_g": 150},
-            {"food_id": egg["food_id"], "weight_g": 100},
+            {"food_id": rice["food_id"], "weight_g": 150, "estimated_weight_range_g": None},
+            {"food_id": egg["food_id"], "weight_g": 100, "estimated_weight_range_g": [90, 110]},
         ],
         "assumptions": ["两个鸡蛋按每个约 50g 换算"],
+        "body_feedback": None,
     })
 
     action = proposal.data["action"]
@@ -177,15 +178,44 @@ def test_crab_count_uses_explicit_low_confidence_edible_portion_estimate():
     assert portion.data["clarification_required"] is False
 
 
-def test_ambiguous_serving_requires_clarification_and_invalid_food_id_is_rejected():
+def test_beef_pie_is_exact_food_and_one_piece_converts_without_clarification():
+    registry = make_registry()
+    search = registry.execute("search_food", {"query": "牛肉馅饼", "barcode": None, "limit": 3})
+
+    assert search.success is True
+    assert search.data["clarification_required"] is False
+    match = search.data["matches"][0]
+    assert match["standard_name"] == "牛肉馅饼"
+
+    portion = registry.execute("convert_food_portion", {
+        "food_id": match["food_id"], "amount": 1, "unit": "个",
+    })
+    assert portion.success is True
+    assert portion.data["weight_g"] == 120
+    assert portion.data["clarification_required"] is False
+    assert "每个约 120g" in portion.data["assumption"]
+
+
+def test_fuzzy_ingredient_match_cannot_replace_unknown_compound_food():
+    registry = make_registry()
+    search = registry.execute("search_food", {"query": "鸡肉馅饼", "barcode": None, "limit": 3})
+
+    assert search.success is True
+    assert search.data["clarification_required"] is True
+    assert "不能直接替代" in search.data["message"]
+
+
+def test_ambiguous_serving_returns_a_low_confidence_range_and_invalid_food_id_is_rejected():
     registry = make_registry()
     fried_rice = registry.execute("search_food", {"query": "炒饭", "barcode": None, "limit": 3}).data["matches"][0]
     portion = registry.execute("convert_food_portion", {
         "food_id": fried_rice["food_id"], "amount": 1, "unit": "份",
     })
     assert portion.success is True
-    assert portion.data["clarification_required"] is True
+    assert portion.data["clarification_required"] is False
     assert portion.data["confidence"] == "low"
+    assert portion.data["estimated_weight_range_g"][0] < portion.data["weight_g"]
+    assert portion.data["estimated_weight_range_g"][1] > portion.data["weight_g"]
 
     missing = registry.execute("calculate_nutrition", {"food_id": str(uuid4()), "weight_g": 100})
     assert missing.success is False
@@ -202,8 +232,9 @@ def test_single_agent_completes_xiaolongbao_record_and_dinner_preview_in_six_too
         tool_call("c4", "calculate_nutrition", {"food_id": str(xiaolongbao.id), "weight_g": 120}),
         tool_call("c5", "propose_meal_record", {
             "meal_type": "lunch",
-            "items": [{"food_id": str(xiaolongbao.id), "weight_g": 120}],
+            "items": [{"food_id": str(xiaolongbao.id), "weight_g": 120, "estimated_weight_range_g": [100, 140]}],
             "assumptions": ["小笼包按每个约 30g 换算"],
+            "body_feedback": None,
         }),
         tool_call("c6", "preview_meal_plans", {"meal_type": "dinner", "scenario": None}),
         final_response(
@@ -286,8 +317,61 @@ def test_timeout_falls_back_to_rule_provider_without_breaking_chat(monkeypatch):
     assert data["model"] == "fake-timeout-model"
     assert data["fallback_used"] is True
     assert data["fallback_reason"].startswith("TIMEOUT")
+    assert data["fallback_retryable"] is True
     trace = main_module.store.agent_traces[next(reversed(main_module.store.agent_traces))]
     assert trace.fallback_used is True
+
+
+def test_ai_status_exposes_runtime_health_without_credentials():
+    headers = setup_ready_user(f"agent-status-{uuid4().hex}")
+
+    response = client.get("/api/v1/ai/status", headers=headers)
+    data = response.json()["data"]
+
+    assert response.status_code == 200
+    assert data["mode"] in {"model", "rules"}
+    assert data["provider"] in {"openai", "deepseek", "rule"}
+    assert "api_key" not in data
+    assert "key" not in data
+
+
+def test_pending_action_overrides_conflicting_clarification_state():
+    profile_id = uuid4()
+    context = AgentContext(
+        recorded_meals=0,
+        expected_meals=3,
+        remaining_energy_kcal=1800,
+        remaining_protein_g=80,
+        remaining_fiber_g=25,
+        data_confidence="low",
+    )
+    action = AIAction(
+        profile_id=profile_id,
+        title="确认这次饮食记录",
+        summary="火腿肠 50g",
+        payload={"meal_type": "lunch", "items": []},
+    )
+    response = AIChatResponse(
+        kind="meal_record_proposal",
+        message="已生成待确认记录。",
+        action=action,
+        decision_stage="clarify",
+        needs_clarification=True,
+        clarification_options=["50g 一根，确认即可"],
+    )
+
+    normalized = main_module.traced_ai_response(
+        profile_id,
+        "我吃了一根火腿肠",
+        "meal_record",
+        context,
+        response,
+        final_action_allowed=True,
+    )["data"]
+
+    assert normalized.decision_stage == "propose"
+    assert normalized.needs_clarification is False
+    assert normalized.clarification_options == []
 
 
 def test_no_api_key_keeps_application_in_rule_mode(monkeypatch):
@@ -335,14 +419,15 @@ def test_agent_provider_passes_compatible_api_base_url_to_sdk(monkeypatch):
     assert captured["api_key"] == "test-relay-key"
 
 
-def test_fried_rice_clarifies_and_actions_cannot_cross_users():
+def test_fried_rice_uses_a_low_confidence_proposal_and_actions_cannot_cross_users():
     owner = setup_ready_user(f"agent-owner-{uuid4().hex}")
     other = setup_ready_user(f"agent-other-{uuid4().hex}")
 
     vague = client.post("/api/v1/ai/chat", json={"message": "我吃了一份炒饭"}, headers=owner).json()["data"]
-    assert vague["kind"] == "clarification"
-    assert vague["needs_clarification"] is True
-    assert vague["action"] is None
+    assert vague["kind"] == "meal_record_proposal"
+    assert vague["needs_clarification"] is False
+    assert vague["confidence"] == "low"
+    assert vague["action"] is not None
 
     proposal = client.post(
         "/api/v1/ai/chat",

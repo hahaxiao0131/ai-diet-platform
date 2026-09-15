@@ -5,6 +5,7 @@ from typing import Any
 from .agent_tools import AgentToolRegistry, AgentToolResult
 from .models import AgentToolCallAudit, AIChatResponse, IntentInterpretation, Nutrition
 from .nutrition import sum_nutrition
+from .risk import detect_profile_food_risks
 
 
 def build_consumption_advice(
@@ -22,6 +23,8 @@ def build_consumption_advice(
 
     calculated: list[Nutrition] = []
     item_summaries: list[str] = []
+    planned_food_names: list[str] = []
+    planned_food_allergens: dict[str, list[str]] = {}
     assumptions: list[str] = []
     confidence = "high"
     for entity in interpretation.foods:
@@ -34,6 +37,8 @@ def build_consumption_advice(
             names = "、".join(match["standard_name"] for match in search_result.data["matches"][:3])
             return _clarification(f"“{entity.raw_name}”可能指{names}，请确认具体食物。", audits)
         food = search_result.data["matches"][0]
+        planned_food_names.append(food["standard_name"])
+        planned_food_allergens[food["standard_name"]] = list(food.get("allergens") or [])
 
         if entity.explicit_weight_g is not None:
             weight_g = entity.explicit_weight_g
@@ -67,6 +72,29 @@ def build_consumption_advice(
             confidence = "medium"
 
     planned = sum_nutrition(calculated)
+    safety_risks = detect_profile_food_risks(
+        tools.profile,
+        planned_food_names,
+        mode="recommendation",
+        food_allergens=planned_food_allergens,
+    )
+    blocking_risks = [risk for risk in safety_risks if risk.get("level") == "block"]
+    if blocking_risks:
+        restrictions = "、".join(dict.fromkeys(str(risk["restriction"]) for risk in blocking_risks))
+        alternatives = list(dict.fromkeys(str(risk["alternative"]) for risk in blocking_risks))
+        return AIChatResponse(
+            kind="consumption_advice",
+            message=(
+                f"这份计划摄入命中你的饮食安全档案（{restrictions}），因此不能建议按当前方案食用。"
+                "我不会把它写入饮食记录；如果你实际上已经吃了，可以如实告诉我，我会保留事实并标注风险。"
+            ),
+            basis=[*(str(risk["message"]) for risk in blocking_risks), "计划摄入未写入今日记录"],
+            suggestions=alternatives,
+            confidence="high",
+            decision_stage="safety",
+            tool_calls=audits,
+        )
+
     context = context_result.data or {}
     remaining = Nutrition.model_validate(context.get("remaining", {}))
     exceeds_energy = planned.energy_kcal > remaining.energy_kcal * 1.1
@@ -78,6 +106,10 @@ def build_consumption_advice(
     if context.get("confidence") == "low":
         conclusion += " 今天的记录完整度较低，结论会随新增餐次变化。"
         confidence = "low"
+
+    notice_risks = [risk for risk in safety_risks if risk.get("level") == "notice"]
+    if notice_risks:
+        conclusion += " " + "；".join(str(risk["message"]) for risk in notice_risks) + "。"
 
     planned_name = "、".join(item_summaries)
     return AIChatResponse(
@@ -91,7 +123,11 @@ def build_consumption_advice(
             *assumptions,
             "计划摄入未写入今日记录",
         ],
-        suggestions=["如果已经吃了，帮我记录", "查看今天还能怎么搭配"],
+        suggestions=[
+            *(str(risk["alternative"]) for risk in notice_risks),
+            "如果已经吃了，帮我记录",
+            "查看今天还能怎么搭配",
+        ],
         confidence=confidence,
         decision_stage="inform",
         tool_calls=audits,

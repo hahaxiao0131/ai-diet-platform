@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app import main as main_module
 from app.intent_provider import IntentProviderResult, OpenAIAssistantProvider
-from app.main import app
+from app.main import app, normalize_structured_intent
 from app.models import IntentFoodEntity, IntentInterpretation
 from app.openai_agent import AgentProviderError, AgentSettings
 from app.providers import RuleBasedAssistantProvider
@@ -43,6 +43,38 @@ def test_rule_provider_distinguishes_semantic_intents(message, intent, speech_ac
         assert result.foods[0].quantity == 2
         assert result.foods[0].unit == "根"
         assert result.foods[0].explicit_weight_g is None
+
+
+def test_beef_pie_statement_is_one_complete_food_with_known_piece_weight():
+    provider = RuleBasedAssistantProvider()
+    result = provider.interpret("我今天吃了一个牛肉馅饼", seeded_foods())
+
+    assert result["intent"] == "meal_record"
+    assert len(result["items"]) == 1
+    assert result["items"][0]["food"].name == "牛肉馅饼"
+    assert result["items"][0]["weight_g"] == 120
+    assert result["items"][0]["weight_source"] == "household_unit"
+
+
+def test_missing_meal_type_alone_does_not_block_completed_record():
+    model_intent = IntentInterpretation(
+        intent="meal_record",
+        speech_act="statement",
+        temporal_status="completed",
+        modality="actual",
+        foods=[IntentFoodEntity(raw_name="牛肉馅饼", quantity=1, unit="个", explicit_weight_g=None)],
+        meal_type=None,
+        should_create_action=True,
+        requires_clarification=True,
+        clarification_question="请问这是早餐、午餐、晚餐还是加餐？",
+        confidence="high",
+    )
+
+    normalized = normalize_structured_intent("我今天吃了一个牛肉馅饼", model_intent)
+
+    assert normalized.meal_type == "lunch"
+    assert normalized.requires_clarification is False
+    assert normalized.clarification_question is None
 
 
 def setup_ready_user(key: str):
@@ -222,6 +254,95 @@ def test_invalid_structured_intent_safely_falls_back_to_rule_provider(monkeypatc
     assert response["kind"] == "meal_record_proposal"
     assert response["fallback_used"] is True
     assert response["fallback_reason"].startswith("FORMAT_ERROR")
+
+
+def test_beef_pie_still_proposes_complete_record_when_agent_falls_back(monkeypatch):
+    class BeefPieIntentProvider:
+        def interpret(self, message):
+            return IntentProviderResult(
+                interpretation=IntentInterpretation(
+                    intent="meal_record",
+                    speech_act="statement",
+                    temporal_status="completed",
+                    modality="actual",
+                    foods=[IntentFoodEntity(raw_name="牛肉馅饼", quantity=1, unit="个", explicit_weight_g=None)],
+                    meal_type=None,
+                    should_create_action=True,
+                    requires_clarification=False,
+                    clarification_question=None,
+                    confidence="high",
+                ),
+                provider="deepseek",
+                model="fake-deepseek-model",
+                latency_ms=3,
+            )
+
+    class FailingAgent:
+        model = "fake-deepseek-model"
+
+        def run(self, *args, **kwargs):
+            raise AgentProviderError("TIMEOUT", "模型请求超时")
+
+    headers = setup_ready_user(f"beef-pie-fallback-{uuid4().hex}")
+    monkeypatch.setattr(main_module, "deepseek_intent_provider", BeefPieIntentProvider())
+    monkeypatch.setattr(main_module, "deepseek_agent_provider", FailingAgent())
+
+    response = client.post(
+        "/api/v1/ai/chat",
+        json={"message": "我今天吃了一个牛肉馅饼"},
+        headers=headers,
+    ).json()["data"]
+
+    assert response["kind"] == "meal_record_proposal"
+    assert response["fallback_used"] is True
+    assert response["needs_clarification"] is False
+    assert response["action"]["payload"]["items"][0]["name"] == "牛肉馅饼"
+    assert response["action"]["payload"]["items"][0]["weight_g"] == 120
+    assert response["action"]["preview_nutrition"]["energy_kcal"] == pytest.approx(306)
+
+
+def test_explicit_completed_meal_survives_model_misclassification_and_agent_failure(monkeypatch):
+    class MisclassifiedIntentProvider:
+        def interpret(self, message):
+            return IntentProviderResult(
+                interpretation=IntentInterpretation(
+                    intent="dietary_knowledge",
+                    speech_act="statement",
+                    temporal_status="unknown",
+                    modality="unknown",
+                    foods=[IntentFoodEntity(raw_name="大闸蟹", quantity=10, unit="只", explicit_weight_g=None)],
+                    meal_type=None,
+                    should_create_action=False,
+                    requires_clarification=False,
+                    clarification_question=None,
+                    confidence="low",
+                ),
+                provider="deepseek",
+                model="fake-deepseek-model",
+                latency_ms=3,
+            )
+
+    class FailingAgent:
+        model = "fake-deepseek-model"
+
+        def run(self, *args, **kwargs):
+            raise AgentProviderError("TIMEOUT", "模型请求超时")
+
+    headers = setup_ready_user(f"crab-hybrid-fallback-{uuid4().hex}")
+    monkeypatch.setattr(main_module, "deepseek_intent_provider", MisclassifiedIntentProvider())
+    monkeypatch.setattr(main_module, "deepseek_agent_provider", FailingAgent())
+
+    response = client.post(
+        "/api/v1/ai/chat",
+        json={"message": "昨天吃了10只大闸蟹，之后拉稀"},
+        headers=headers,
+    ).json()["data"]
+
+    assert response["kind"] == "meal_record_proposal"
+    assert response["action"]["status"] == "proposed"
+    assert response["action"]["payload"]["body_feedback"]["symptoms"] == ["腹泻"]
+    assert response["decision_stage"] == "propose"
+    assert response["fallback_used"] is True
 
 
 def test_medical_message_still_uses_deterministic_safety_guard():

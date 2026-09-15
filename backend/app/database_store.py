@@ -81,6 +81,7 @@ class DatabaseStore(MemoryStore):
             self._persist_sessions(session)
 
     def _load_database(self) -> None:
+        catalog_added = False
         with self._session_factory() as session:
             identities = session.scalars(select(UserIdentityRow)).all()
             self.users = {item.identity_key: UUID(item.user_id) for item in identities}
@@ -90,8 +91,11 @@ class DatabaseStore(MemoryStore):
 
             food_rows = session.scalars(select(FoodRow)).all()
             if food_rows:
-                foods = [Food.model_validate(item.payload) for item in food_rows]
-                self.foods = foods
+                persisted_foods = [Food.model_validate(item.payload) for item in food_rows]
+                persisted_ids = {food.id for food in persisted_foods}
+                new_catalog_foods = [food for food in self.foods if food.id not in persisted_ids]
+                self.foods = [*persisted_foods, *new_catalog_foods]
+                catalog_added = bool(new_catalog_foods)
 
             goals = [GoalProposal.model_validate(item.payload) for item in session.scalars(select(GoalRow)).all()]
             self.goal_proposals = {item.id: item for item in goals}
@@ -116,7 +120,7 @@ class DatabaseStore(MemoryStore):
                 self.weights.setdefault(UUID(item.profile_id), []).append(item.payload)
             self.sessions = {item.token_hash: item.payload for item in session.scalars(select(SessionRow)).all()}
 
-        if not food_rows:
+        if not food_rows or catalog_added:
             self.persist()
 
     @staticmethod
@@ -246,3 +250,30 @@ class DatabaseStore(MemoryStore):
                 "payload": _json_value(payload),
             }
             self._upsert(session, SessionRow, token_hash, values)
+
+    def delete_user(self, user_id: UUID) -> dict[str, Any] | None:
+        profile_ids = {profile.id for profile in self.profiles.values() if profile.user_id == user_id}
+        exists = bool(profile_ids) or user_id in self.users.values() or any(
+            str(session.get("user_id")) == str(user_id) for session in self.sessions.values()
+        )
+        if not exists:
+            return None
+        encoded_profile_ids = [str(profile_id) for profile_id in profile_ids]
+        with self._write_lock, self._session_factory.begin() as session:
+            if encoded_profile_ids:
+                session.execute(delete(AgentFeedbackRow).where(AgentFeedbackRow.profile_id.in_(encoded_profile_ids)))
+                session.execute(delete(AIActionRow).where(AIActionRow.profile_id.in_(encoded_profile_ids)))
+                session.execute(delete(AgentMemoryRow).where(AgentMemoryRow.profile_id.in_(encoded_profile_ids)))
+                session.execute(delete(AgentTraceRow).where(AgentTraceRow.profile_id.in_(encoded_profile_ids)))
+                session.execute(delete(MealDraftRow).where(MealDraftRow.profile_id.in_(encoded_profile_ids)))
+                session.execute(delete(MealRow).where(MealRow.profile_id.in_(encoded_profile_ids)))
+                session.execute(delete(MealPlanRow).where(MealPlanRow.profile_id.in_(encoded_profile_ids)))
+                session.execute(delete(ActiveGoalRow).where(ActiveGoalRow.profile_id.in_(encoded_profile_ids)))
+                session.execute(delete(GoalRow).where(GoalRow.profile_id.in_(encoded_profile_ids)))
+                session.execute(delete(WeightRecordRow).where(WeightRecordRow.profile_id.in_(encoded_profile_ids)))
+                session.execute(delete(FoodRow).where(FoodRow.owner_profile_id.in_(encoded_profile_ids)))
+                session.execute(delete(ProfileRow).where(ProfileRow.id.in_(encoded_profile_ids)))
+            session.execute(delete(SessionRow).where(SessionRow.user_id == str(user_id)))
+            session.execute(delete(UserIdentityRow).where(UserIdentityRow.user_id == str(user_id)))
+            session.execute(delete(UserRow).where(UserRow.id == str(user_id)))
+        return self._remove_user_from_memory(user_id)

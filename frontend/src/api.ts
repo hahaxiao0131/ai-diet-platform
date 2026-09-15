@@ -1,4 +1,6 @@
-const API_BASE = "http://127.0.0.1:8000/api/v1";
+import { resolveApiBaseUrl } from "./apiBase.ts";
+
+const API_BASE = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 
 let accessToken = window.localStorage.getItem("diet_access_token") ?? "";
 
@@ -24,9 +26,19 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       ? detail
       : detail?.message
         ?? (Array.isArray(detail) ? detail.map((item) => item?.msg).filter(Boolean).join("；") : "");
-    throw new Error(message || "请求失败，请稍后重试");
+    throw new ApiError(message || "请求失败，请稍后重试", detail);
   }
   return Object.prototype.hasOwnProperty.call(payload, "data") ? payload.data : payload;
+}
+
+export class ApiError extends Error {
+  detail: { code?: string; current_action?: AIAction } | undefined;
+
+  constructor(message: string, detail?: { code?: string; current_action?: AIAction }) {
+    super(message);
+    this.name = "ApiError";
+    this.detail = detail;
+  }
 }
 
 export const api = {
@@ -35,6 +47,8 @@ export const api = {
   phoneLogin: (phone: string, code: string) => request<AuthSession>("/auth/phone/login", { method: "POST", body: JSON.stringify({ phone, code }) }),
   wechatLogin: (code: string) => request<AuthSession>("/auth/wechat/login", { method: "POST", body: JSON.stringify({ code }) }),
   logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+  exportAccountData: () => request<AccountExport>("/account/export"),
+  deleteAccount: (confirmation: string) => request<{ deleted: boolean; counts: Record<string, number> }>("/account", { method: "DELETE", body: JSON.stringify({ confirmation }) }),
   getProfile: () => request<Profile>("/profiles/me"),
   updateProfile: (payload: Partial<Profile>) =>
     request<Profile>("/profiles/me", { method: "PUT", body: JSON.stringify(payload) }),
@@ -51,13 +65,15 @@ export const api = {
     request<Food>("/foods/label", { method: "POST", body: JSON.stringify(payload) }),
   createManualMeal: (payload: ManualMealCreatePayload) =>
     request<Meal>("/meals/manual", { method: "POST", body: JSON.stringify(payload) }),
-  createDraft: (mealType: string) =>
-    request<MealDraft>("/meal-drafts", {
+  saveMealFeedback: (mealId: string, payload: BodyFeedbackInput) =>
+    request<Meal>(`/meals/${mealId}/feedback`, { method: "POST", body: JSON.stringify(payload) }),
+  getSevenDayTrend: () => request<SevenDayTrend>("/trends/7-days"),
+  assessDiet: (payload: DietAssessmentRequest) =>
+    request<DietAssessment>("/ai/assess", { method: "POST", body: JSON.stringify(payload) }),
+  createExampleDraft: (mealType: string) =>
+    request<MealDraft>("/meal-drafts/example", {
       method: "POST",
-      body: JSON.stringify({
-        meal_type: mealType,
-        assets: [{ type: "image", storage_key: "mock-camera-input.jpg" }],
-      }),
+      body: JSON.stringify({ meal_type: mealType }),
     }),
   confirmDraft: (draft: MealDraft, items: MealDraftItem[] = draft.items) =>
     request<Meal>("/meal-drafts/" + draft.id + "/confirm", {
@@ -83,22 +99,46 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ index, food_name: foodName }),
     }),
-  chat: (message: string) =>
-    request<AIChatResponse>("/ai/chat", { method: "POST", body: JSON.stringify({ message }) }),
+  chat: (message: string, replyToTraceId?: string | null) =>
+    request<AIChatResponse>("/ai/chat", {
+      method: "POST",
+      body: JSON.stringify({ message, reply_to_trace_id: replyToTraceId ?? null }),
+    }),
+  getAiStatus: () => request<AIServiceStatus>("/ai/status"),
+  getAiHistory: (limit = 30, cursor?: string | null) => request<AIHistoryPage>(`/ai/history?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
   getAiContext: () => request<AgentContext>("/ai/context"),
   getAiMemories: () => request<AgentMemory[]>("/ai/memories"),
   deleteAiMemory: (id: string) => request<AgentMemory>(`/ai/memories/${id}`, { method: "DELETE" }),
   giveAiFeedback: (traceId: string, rating: "helpful" | "not_helpful") =>
     request<AgentFeedback>(`/ai/traces/${traceId}/feedback`, { method: "POST", body: JSON.stringify({ rating }) }),
-  confirmAiAction: (id: string) =>
-    request<{ action: AIAction; meal: Meal | null; memory: AgentMemory | null }>(`/ai/actions/${id}/confirm`, { method: "POST" }),
-  cancelAiAction: (id: string) =>
-    request<AIAction>(`/ai/actions/${id}/cancel`, { method: "POST" }),
+  confirmAiAction: (id: string, expectedRevision: number) =>
+    request<{ action: AIAction; meal: Meal | null; memory: AgentMemory | null; profile?: Profile | null }>(`/ai/actions/${id}/confirm`, { method: "POST", body: JSON.stringify({ expected_revision: expectedRevision }) }),
+  updateAiAction: (id: string, payload: AIActionMealUpdatePayload) =>
+    request<AIAction>(`/ai/actions/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  cancelAiAction: (id: string, expectedRevision: number) =>
+    request<AIAction>(`/ai/actions/${id}/cancel`, { method: "POST", body: JSON.stringify({ expected_revision: expectedRevision }) }),
 };
 
 export type AuthSession = {
   access_token?: string;
   user: { id: string; is_new: boolean };
+};
+
+export type AccountExport = {
+  schema_version: string;
+  exported_at: string;
+  profile: Profile;
+  goals: GoalProposal[];
+  active_goal: GoalProposal | null;
+  weight_records: unknown[];
+  meals: Meal[];
+  meal_drafts: MealDraft[];
+  meal_plans: MealPlan[];
+  custom_foods: Food[];
+  ai_memories: AgentMemory[];
+  ai_traces: Record<string, unknown>[];
+  ai_actions: AIAction[];
+  ai_feedback: AgentFeedback[];
 };
 
 export type Profile = {
@@ -111,6 +151,13 @@ export type Profile = {
   activity_level: "sedentary" | "light" | "moderate" | "high" | null;
   primary_goal: "fat_loss" | "muscle_gain" | "maintain" | "structure" | null;
   goal_pace: "steady" | "standard" | "aggressive" | null;
+  allergies: string[];
+  hard_exclusions: string[];
+  preferences: string[];
+  food_intolerances: string[];
+  digestive_sensitivities: string[];
+  exercise_habits: string[];
+  safety_profile_reviewed: boolean;
   onboarding_completed: boolean;
 };
 
@@ -143,6 +190,7 @@ export type Food = {
   barcode: string | null;
   brand: string | null;
   verified_by_user: boolean;
+  allergens: string[];
 };
 
 export type CustomFoodCreatePayload = {
@@ -150,6 +198,7 @@ export type CustomFoodCreatePayload = {
   basis_weight_g: number;
   default_weight_g?: number;
   nutrition: Nutrition;
+  allergens?: string[];
 };
 
 export type PackagedFoodLabelPayload = CustomFoodCreatePayload & {
@@ -164,6 +213,18 @@ export type ManualMealCreatePayload = {
     weight_g: number;
     consumed_ratio: number;
   }[];
+  body_feedback?: BodyFeedbackInput | null;
+};
+
+export type BodyFeedbackInput = {
+  symptoms: string[];
+  severity: "none" | "mild" | "moderate" | "severe";
+  occurred_after_minutes?: number | null;
+  notes?: string | null;
+};
+
+export type BodyFeedback = BodyFeedbackInput & {
+  recorded_at: string;
 };
 
 export type GoalProposal = {
@@ -195,11 +256,81 @@ export type MealDraft = {
 export type Meal = {
   id: string;
   meal_type: string;
-  items: { food_id: string | null; name: string; weight_g: number; consumed_ratio: number; nutrition: Nutrition }[];
+  items: { food_id: string | null; name: string; weight_g: number; consumed_ratio: number; nutrition: Nutrition; estimated_weight_range_g: number[] | null }[];
   nutrition: Nutrition;
   score: { score: number; negative_points: string[]; next_actions: string[] };
-  risks: { level: string; message: string }[];
+  risks: SafetyRisk[];
   confidence: string;
+  body_feedback: BodyFeedback | null;
+};
+
+export type SafetyRisk = {
+  level: string;
+  evaluation_mode?: "record" | "recommendation";
+  decision_effect?: "recorded_with_warning" | "blocked" | "notice";
+  type?: string;
+  restriction?: string;
+  food_name?: string;
+  message: string;
+  alternative?: string;
+};
+
+export type TrendDay = {
+  date: string;
+  meal_count: number;
+  score: number | null;
+  food_variety: number;
+  body_feedback_count: number;
+  discomfort_count: number;
+  symptoms: string[];
+};
+
+export type ReactionInsight = {
+  food_name: string;
+  symptom: string;
+  occurrences: number;
+  evidence_level: "observation" | "suspected" | "repeated";
+  confidence: AgentConfidence;
+  first_seen: string;
+  last_seen: string;
+  summary: string;
+  next_action: string;
+};
+
+export type SevenDayTrend = {
+  start_date: string;
+  end_date: string;
+  days: TrendDay[];
+  average_score: number | null;
+  total_meals: number;
+  food_variety: number;
+  feedback_completion_rate: number;
+  common_symptoms: string[];
+  reaction_insights: ReactionInsight[];
+  feedback_due_count: number;
+  focus_action: string | null;
+};
+
+export type DietAssessmentRequest = {
+  meal_id?: string | null;
+  days?: number;
+  message?: string | null;
+};
+
+export type DietAssessment = {
+  overall_score: number;
+  general_analysis: string[];
+  personalized_analysis: string[];
+  optimization_suggestions: string[];
+  nutrition_estimates: { nutrient: string; minimum: number; maximum: number; unit: string; basis: string }[];
+  evidence: string[];
+  confidence: AgentConfidence;
+  disclaimer: string;
+  markdown: string;
+  provider: string;
+  model: string | null;
+  fallback_used: boolean;
+  fallback_reason: string | null;
 };
 
 export type MealPlan = {
@@ -232,22 +363,49 @@ export type TodaySummary = {
 
 export type AIAction = {
   id: string;
-  action_type: "create_meal" | "remember_preference";
+  action_type: "create_meal" | "remember_preference" | "update_safety_profile";
   title: string;
   summary: string;
   payload: {
     meal_type?: "breakfast" | "lunch" | "dinner" | "snack";
-    items?: { food_id: string; name: string; weight_g: number; consumed_ratio: number }[];
+    items?: {
+      food_id: string;
+      name: string;
+      weight_g: number;
+      consumed_ratio: number;
+      estimated_weight_range_g?: number[] | null;
+      data_source?: string;
+      source_url?: string | null;
+      brand?: string | null;
+      confidence?: AgentConfidence;
+    }[];
+    body_feedback?: BodyFeedbackInput | null;
+    eaten_at?: string;
     meal_id?: string;
     memory_id?: string;
     category?: "preference" | "avoidance" | "habit";
+    profile_field?: "allergies" | "hard_exclusions" | "food_intolerances" | "digestive_sensitivities";
+    operation?: "add" | "remove";
     value?: string;
+    safety_risks?: SafetyRisk[];
+    safety_acknowledged_at?: string;
   };
   preview_nutrition: Nutrition;
   confidence: AgentConfidence;
   assumptions: string[];
   source_trace_id: string | null;
   status: "proposed" | "confirmed" | "cancelled";
+  revision: number;
+};
+
+export type AIActionMealUpdatePayload = {
+  meal_type: "breakfast" | "lunch" | "dinner" | "snack";
+  items: {
+    food_id: string;
+    weight_g: number;
+    consumed_ratio: number;
+  }[];
+  expected_revision?: number;
 };
 
 export type AgentConfidence = "high" | "medium" | "low";
@@ -280,7 +438,21 @@ export type AgentMemory = {
   category: "preference" | "avoidance" | "habit";
   value: string;
   status: "active" | "deleted";
+  source_message: string;
   created_at: string;
+  updated_at: string;
+};
+
+export type AIServiceStatus = {
+  mode: "model" | "rules";
+  provider: "deepseek" | "openai" | "rule";
+  model: string | null;
+  available: boolean;
+  timeout_seconds: number;
+  max_retries: number;
+  configuration_issue: string | null;
+  online_food_search_available: boolean;
+  online_food_search_issue: string | null;
 };
 
 export type AgentFeedback = {
@@ -289,7 +461,7 @@ export type AgentFeedback = {
 };
 
 export type AIChatResponse = {
-  kind: "explanation" | "meal_record_proposal" | "consumption_advice" | "plan_recommendation" | "food_replacement" | "food_nutrition" | "dietary_knowledge" | "memory_proposal" | "clarification" | "safety";
+  kind: "explanation" | "meal_record_proposal" | "consumption_advice" | "plan_recommendation" | "food_replacement" | "food_nutrition" | "dietary_knowledge" | "memory_proposal" | "safety_profile_proposal" | "clarification" | "safety" | "health_assessment";
   message: string;
   basis: string[];
   suggestions: string[];
@@ -307,5 +479,22 @@ export type AIChatResponse = {
   latency_ms: number | null;
   fallback_used: boolean;
   fallback_reason: string | null;
+  fallback_retryable: boolean;
   intent_conflict: string | null;
+};
+
+export type AIHistoryTurn = {
+  trace_id: string;
+  user_message: string;
+  assistant_response: AIChatResponse;
+  created_at: string;
+  feedback_rating: "helpful" | "not_helpful" | null;
+};
+
+export type AIHistoryPage = {
+  items: AIHistoryTurn[];
+  limit: number;
+  has_more: boolean;
+  next_cursor: string | null;
+  next_before: string | null;
 };

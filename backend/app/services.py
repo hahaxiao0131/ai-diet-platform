@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Iterable
+from typing import Iterable, Literal
 from zoneinfo import ZoneInfo
 
 from .models import (
@@ -132,16 +132,149 @@ def score_meal(nutrition: Nutrition, target: Nutrition, item_names: list[str]) -
     }
 
 
-def detect_risks(profile: Profile, item_names: list[str], nutrition: Nutrition) -> list[dict]:
-    risks = []
-    hard = {name.lower() for name in profile.hard_exclusions + profile.allergies}
-    for name in item_names:
-        if name.lower() in hard:
-            risks.append({"level": "block", "type": "hard_exclusion", "message": f"可能命中禁用食物：{name}"})
+SAFETY_FOOD_GROUPS = {
+    "乳糖": {"乳糖", "牛奶", "普通牛奶", "全脂牛奶", "低脂牛奶", "脱脂牛奶", "奶粉", "奶茶", "酸奶", "奶酪", "芝士", "乳制品", "奶制品"},
+    "花生": {"花生", "花生米", "花生酱", "花生碎", "花生油"},
+    "牛肉": {"牛肉", "牛肉馅", "牛肉馅饼", "牛肉饼", "牛肉面"},
+    "鸡蛋": {"鸡蛋", "蛋液", "蛋黄", "蛋白", "蛋糕"},
+    "麸质": {"麸质", "小麦", "面粉", "面包", "馒头", "面条", "饼干"},
+    "海鲜": {"海鲜", "虾", "虾仁", "螃蟹", "蟹", "贝类"},
+}
+
+
+def _normalize_safety_term(value: str) -> str:
+    normalized = "".join(value.lower().strip().split())
+    for token in ("绝对避免", "不要推荐", "不能吃", "不吃", "忌口", "过敏", "不耐受", "敏感"):
+        normalized = normalized.replace(token, "")
+    return normalized.strip("，。！？,.!?：:；;")
+
+
+def _expanded_safety_terms(value: str) -> set[str]:
+    normalized = _normalize_safety_term(value)
+    terms = {normalized} if normalized else set()
+    for canonical, aliases in SAFETY_FOOD_GROUPS.items():
+        normalized_aliases = {_normalize_safety_term(alias) for alias in aliases}
+        if normalized == canonical or any(alias and (alias in normalized or normalized in alias) for alias in normalized_aliases):
+            terms.update(normalized_aliases)
+    return {term for term in terms if term}
+
+
+def safety_term_matches(restriction: str, food_name: str) -> bool:
+    food = _normalize_safety_term(food_name)
+    if not food:
+        return False
+    return any(term in food or food in term for term in _expanded_safety_terms(restriction))
+
+
+def _safety_alternative(restriction: str) -> str:
+    terms = _expanded_safety_terms(restriction)
+    if "乳糖" in terms or "牛奶" in terms:
+        return "可改选明确标注无乳糖的奶制品或不含乳成分的豆制品"
+    if "花生" in terms:
+        return "请选择配料表明确不含花生、并排除交叉污染风险的替代食物"
+    if "牛肉" in terms:
+        return "可改选鸡肉、鱼虾或豆腐等符合你档案的蛋白质来源"
+    return f"请选择明确不含“{restriction}”的替代食物"
+
+
+def detect_profile_food_risks(
+    profile: Profile,
+    item_names: list[str],
+    *,
+    mode: Literal["record", "recommendation"] = "record",
+    food_allergens: dict[str, list[str]] | None = None,
+) -> list[dict]:
+    """Apply deterministic profile rules to names and declared allergens."""
+    categories = (
+        ("allergy", profile.allergies, "过敏档案", "block"),
+        ("hard_exclusion", profile.hard_exclusions, "绝对避免", "block"),
+        ("intolerance", profile.food_intolerances, "食物不耐受", "block" if mode == "recommendation" else "notice"),
+        ("digestive_sensitivity", profile.digestive_sensitivities, "肠胃敏感", "notice"),
+    )
+    risks: list[dict] = []
+    allergen_context = food_allergens or {}
+    seen: set[tuple[str, str, str, str]] = set()
+    for risk_type, restrictions, label, level in categories:
+        for restriction in restrictions:
+            for item_name in item_names:
+                candidates = [("food_name", item_name)] if safety_term_matches(restriction, item_name) else [
+                    ("allergen", allergen)
+                    for allergen in allergen_context.get(item_name, [])
+                    if allergen.strip()
+                ]
+                for match_source, matched_value in candidates:
+                    if not safety_term_matches(restriction, matched_value):
+                        continue
+                    key = (risk_type, restriction, item_name, match_source)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    decision_effect = (
+                        "recorded_with_warning" if mode == "record" and level == "block"
+                        else "blocked" if mode == "recommendation" and level == "block"
+                        else "notice"
+                    )
+                    action = (
+                        "高风险记录" if decision_effect == "recorded_with_warning"
+                        else "已阻止" if decision_effect == "blocked"
+                        else "请留意"
+                    )
+                    source_note = f"（过敏原标注：{matched_value}）" if match_source == "allergen" else ""
+                    risks.append({
+                        "level": level,
+                        "evaluation_mode": mode,
+                        "decision_effect": decision_effect,
+                        "type": risk_type,
+                        "restriction": restriction,
+                        "food_name": item_name,
+                        "match_source": match_source,
+                        "matched_value": matched_value,
+                        "message": f"{action}：{item_name}{source_note} 命中你的{label}“{restriction}”",
+                        "alternative": _safety_alternative(restriction),
+                    })
+    return risks
+
+
+def food_allergen_context(items: Iterable[MealItem], foods: Iterable[Food]) -> dict[str, list[str]]:
+    """Keep declared allergens attached when a Food becomes a display-only MealItem."""
+    foods_by_id = {food.id: food for food in foods}
+    return {
+        item.name: list(foods_by_id[item.food_id].allergens)
+        for item in items
+        if item.food_id in foods_by_id and foods_by_id[item.food_id].allergens
+    }
+
+
+def recommendation_avoidances(profile: Profile, foods: Iterable[Food]) -> list[str]:
+    """Expand profile terms into food-library names so deterministic planners can avoid them."""
+    food_list = list(foods)
+    names = [food.name for food in food_list]
+    blocked = {
+        food.name
+        for food in food_list
+        if any(risk["level"] == "block" for risk in detect_profile_food_risks(
+            profile,
+            [food.name],
+            mode="recommendation",
+            food_allergens={food.name: food.allergens},
+        ))
+    }
+    return sorted(blocked | set(profile.allergies) | set(profile.hard_exclusions) | set(profile.food_intolerances))
+
+
+def detect_risks(
+    profile: Profile,
+    item_names: list[str],
+    nutrition: Nutrition,
+    *,
+    mode: Literal["record", "recommendation"] = "record",
+    food_allergens: dict[str, list[str]] | None = None,
+) -> list[dict]:
+    risks = detect_profile_food_risks(profile, item_names, mode=mode, food_allergens=food_allergens)
     if nutrition.sodium_mg > 1200:
-        risks.append({"level": "notice", "type": "sodium_high", "message": "本餐钠摄入偏高"})
+        risks.append({"level": "notice", "evaluation_mode": mode, "decision_effect": "notice", "type": "sodium_high", "message": "本餐钠摄入偏高"})
     if (nutrition.added_sugar_g or 0) > 15:
-        risks.append({"level": "notice", "type": "added_sugar_high", "message": "本餐添加糖偏高"})
+        risks.append({"level": "notice", "evaluation_mode": mode, "decision_effect": "notice", "type": "added_sugar_high", "message": "本餐添加糖偏高"})
     return risks
 
 

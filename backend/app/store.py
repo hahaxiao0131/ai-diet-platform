@@ -33,6 +33,7 @@ def seeded_foods() -> list[Food]:
         fruit=0,
         aliases=None,
         food_type="ingredient",
+        allergens=None,
     ):
         return Food(
             id=uuid5(FOOD_NAMESPACE, f"local-seed:{name}"),
@@ -41,6 +42,7 @@ def seeded_foods() -> list[Food]:
             default_unit="1份",
             default_weight_g=default_weight,
             food_type=food_type,
+            allergens=allergens or [],
             tags=[category, "常见食材"],
             nutrition_per_100g={
                 "energy_kcal": energy,
@@ -57,9 +59,9 @@ def seeded_foods() -> list[Food]:
 
     foods = [
         food("米饭", 116, 2.6, 0.3, 25.9, 0.3, 2, category="主食", default_weight=150, aliases=["白米饭", "大米饭"]),
-        food("鸡蛋", 144, 13.3, 8.8, 2.8, 0, 125, category="肉蛋", default_weight=50, aliases=["水煮蛋", "煮鸡蛋"]),
+        food("鸡蛋", 144, 13.3, 8.8, 2.8, 0, 125, category="肉蛋", default_weight=50, aliases=["水煮蛋", "煮鸡蛋"], allergens=["鸡蛋"]),
         food("鸡胸肉", 165, 31, 3.6, 0, 0, 75, category="肉蛋", default_weight=150, aliases=["鸡肉", "鸡胸"]),
-        food("牛奶", 54, 3, 3.2, 3.4, 0, 43, category="奶豆", default_weight=250, aliases=["纯牛奶", "鲜奶"]),
+        food("牛奶", 54, 3, 3.2, 3.4, 0, 43, category="奶豆", default_weight=250, aliases=["纯牛奶", "鲜奶"], allergens=["牛奶", "乳糖"]),
         food("番茄", 18, 0.9, 0.2, 3.9, 1.2, 5, category="蔬菜", default_weight=150, vegetable=100, aliases=["西红柿"]),
         food("西兰花", 34, 2.8, 0.4, 6.6, 2.6, 33, category="蔬菜", default_weight=150, vegetable=100, aliases=["绿菜花"]),
         food("香蕉", 93, 1.4, 0.2, 22, 1.2, 1, category="水果", default_weight=100, fruit=85),
@@ -75,9 +77,9 @@ def seeded_foods() -> list[Food]:
         food("玉米", 112, 4, 1.2, 22.8, 2.9, 15, category="主食", default_weight=180, aliases=["甜玉米", "玉米棒"]),
         food("菠菜", 23, 2.9, 0.4, 3.6, 2.2, 79, category="蔬菜", default_weight=150, vegetable=100),
         food("橙子", 48, 0.9, 0.1, 11.8, 2.4, 0, category="水果", default_weight=180, fruit=75, aliases=["橙", "脐橙"]),
-        food("全麦面包", 246, 9.7, 4.2, 46.1, 6.4, 450, category="主食", default_weight=70, aliases=["面包", "全麦吐司"]),
+        food("全麦面包", 246, 9.7, 4.2, 46.1, 6.4, 450, category="主食", default_weight=70, aliases=["面包", "全麦吐司"], allergens=["麸质"]),
         food("糙米饭", 116, 2.7, 0.9, 24, 1.8, 4, category="主食", default_weight=150, aliases=["糙米"]),
-        food("馒头", 223, 7, 1.1, 47, 1.3, 165, category="主食", default_weight=100, aliases=["白馒头"]),
+        food("馒头", 223, 7, 1.1, 47, 1.3, 165, category="主食", default_weight=100, aliases=["白馒头"], allergens=["麸质"]),
         food("土豆", 77, 2, 0.1, 17.5, 2.2, 6, category="主食", default_weight=180, aliases=["马铃薯"]),
         food("鸡腿肉（去皮）", 177, 24, 8, 0, 0, 84, category="肉蛋", default_weight=150, aliases=["鸡腿", "去皮鸡腿"]),
         food("瘦猪肉", 143, 20.3, 6.2, 0, 0, 58, category="肉蛋", default_weight=150, aliases=["猪肉", "猪里脊", "里脊肉"]),
@@ -100,7 +102,7 @@ def seeded_foods() -> list[Food]:
         food("无糖豆浆", 31, 3, 1.6, 1.2, 0.6, 4, category="奶豆", default_weight=250, aliases=["豆浆"]),
         food("豆干", 140, 16.2, 7.2, 3.6, 0.8, 490, category="奶豆", default_weight=100, aliases=["豆腐干", "香干"]),
         food("毛豆", 131, 11.9, 5.7, 10.1, 5.2, 6, category="奶豆", default_weight=120, aliases=["青豆"]),
-        food("番茄炒蛋", 132, 6.8, 7.2, 8.5, 1.2, 320, category="常见菜", default_weight=180, vegetable=55, food_type="standard_dish"),
+        food("番茄炒蛋", 132, 6.8, 7.2, 8.5, 1.2, 320, category="常见菜", default_weight=180, vegetable=55, food_type="standard_dish", allergens=["鸡蛋"]),
         food("清炒青菜", 70, 2.2, 3.5, 6.5, 2.8, 360, category="常见菜", default_weight=180, vegetable=85, aliases=["炒青菜"], food_type="standard_dish"),
     ]
     extended = [
@@ -233,6 +235,66 @@ class MemoryStore:
 
     def memories_for(self, profile_id: UUID) -> list[AgentMemory]:
         return [memory for memory in self.agent_memories.values() if memory.profile_id == profile_id and memory.status == "active"]
+
+    def _remove_user_from_memory(self, user_id: UUID) -> dict[str, Any] | None:
+        profile_ids = {profile.id for profile in self.profiles.values() if profile.user_id == user_id}
+        exists = bool(profile_ids) or user_id in self.users.values() or any(
+            str(session.get("user_id")) == str(user_id) for session in self.sessions.values()
+        )
+        if not exists:
+            return None
+        owned_food_ids = {
+            food.id for food in self.foods
+            if any(tag == f"profile:{profile_id}" for profile_id in profile_ids for tag in food.tags)
+        }
+        counts = {
+            "profiles": len(profile_ids),
+            "goals": sum(goal.profile_id in profile_ids for goal in self.goal_proposals.values()),
+            "drafts": sum(draft.profile_id in profile_ids for draft in self.drafts.values()),
+            "meals": sum(meal.profile_id in profile_ids for meal in self.meals.values()),
+            "plans": sum(plan.profile_id in profile_ids for plan in self.plans.values()),
+            "ai_actions": sum(action.profile_id in profile_ids for action in self.ai_actions.values()),
+            "ai_memories": sum(memory.profile_id in profile_ids for memory in self.agent_memories.values()),
+            "ai_traces": sum(trace.profile_id in profile_ids for trace in self.agent_traces.values()),
+            "ai_feedback": sum(feedback.profile_id in profile_ids for feedback in self.agent_feedback.values()),
+            "custom_foods": len(owned_food_ids),
+        }
+        self.users = {key: value for key, value in self.users.items() if value != user_id}
+        self.profiles = {key: value for key, value in self.profiles.items() if key not in profile_ids}
+        self.foods = [food for food in self.foods if food.id not in owned_food_ids]
+        self.goal_proposals = {key: value for key, value in self.goal_proposals.items() if value.profile_id not in profile_ids}
+        self.active_goals = {key: value for key, value in self.active_goals.items() if key not in profile_ids}
+        self.drafts = {key: value for key, value in self.drafts.items() if value.profile_id not in profile_ids}
+        self.meals = {key: value for key, value in self.meals.items() if value.profile_id not in profile_ids}
+        self.plans = {key: value for key, value in self.plans.items() if value.profile_id not in profile_ids}
+        self.ai_actions = {key: value for key, value in self.ai_actions.items() if value.profile_id not in profile_ids}
+        self.agent_memories = {key: value for key, value in self.agent_memories.items() if value.profile_id not in profile_ids}
+        self.agent_traces = {key: value for key, value in self.agent_traces.items() if value.profile_id not in profile_ids}
+        self.agent_feedback = {key: value for key, value in self.agent_feedback.items() if value.profile_id not in profile_ids}
+        self.weights = {key: value for key, value in self.weights.items() if key not in profile_ids}
+        self.sessions = {
+            key: value for key, value in self.sessions.items()
+            if str(value.get("user_id")) != str(user_id)
+        }
+        return {"profile_ids": profile_ids, "counts": counts}
+
+    def delete_user(self, user_id: UUID) -> dict[str, Any] | None:
+        state_names = (
+            "users", "profiles", "foods", "goal_proposals", "active_goals", "drafts", "meals", "plans",
+            "ai_actions", "agent_memories", "agent_traces", "agent_feedback", "weights", "sessions",
+        )
+        with self.atomic():
+            previous = {name: getattr(self, name) for name in state_names}
+            result = self._remove_user_from_memory(user_id)
+            if result is None:
+                return None
+            try:
+                self.persist()
+            except Exception:
+                for name, value in previous.items():
+                    setattr(self, name, value)
+                raise
+            return result
 
 
 def _json_value(value: Any) -> Any:

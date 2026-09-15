@@ -51,6 +51,14 @@ def function_call(call_id: str, name: str, arguments: dict):
     }
 
 
+def malformed_function_call(call_id: str, name: str):
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": "{not-json"},
+    }
+
+
 def make_registry():
     memory_store = MemoryStore(None)
     profile = Profile(
@@ -80,7 +88,7 @@ def settings():
     return DeepSeekSettings(
         provider="deepseek",
         api_key="test-key",
-        base_url="https://api.deepseek.com/beta",
+        base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
         timeout_seconds=30,
         max_tool_turns=6,
@@ -98,7 +106,7 @@ def test_deepseek_settings_are_read_without_openai_variables(monkeypatch):
     result = DeepSeekSettings.from_env()
 
     assert result.enabled is True
-    assert result.base_url == "https://api.deepseek.com/beta"
+    assert result.base_url == "https://api.deepseek.com"
     assert result.model == "deepseek-v4-flash"
 
 
@@ -124,6 +132,7 @@ def test_deepseek_intent_uses_forced_function_and_pydantic_validation():
     assert result.interpretation.should_create_action is False
     assert completions.calls[0]["tool_choice"]["function"]["name"] == "submit_intent"
     assert completions.calls[0]["extra_body"]["thinking"]["type"] == "disabled"
+    assert completions.calls[0]["tools"][0]["function"]["strict"] is True
 
 
 def test_deepseek_agent_executes_backend_tool_then_submits_final_answer():
@@ -153,6 +162,36 @@ def test_deepseek_agent_executes_backend_tool_then_submits_final_answer():
     assert [call.name for call in result.tool_calls] == ["get_today_context"]
     second_messages = completions.calls[1]["messages"]
     assert any(message.get("role") == "tool" for message in second_messages)
+    assert all(tool["function"]["strict"] is True for tool in completions.calls[0]["tools"])
+
+
+def test_deepseek_agent_recovers_from_malformed_tool_arguments():
+    final = {
+        "goal": "完成基础饮食回答",
+        "kind": "dietary_knowledge",
+        "message": "已恢复并完成回答。",
+        "basis": ["工具参数经过后端校验"],
+        "suggestions": [],
+        "confidence": "medium",
+        "decision_stage": "inform",
+        "needs_clarification": False,
+        "clarification_options": [],
+        "action_id": None,
+        "cta": None,
+    }
+    client, completions = fake_client([
+        [malformed_function_call("bad-1", "search_food")],
+        [function_call("final-1", "submit_final_answer", final)],
+    ])
+    provider = DeepSeekAgentProvider(settings(), client=client)
+
+    result = provider.run("牛肉馅饼是什么", make_registry())
+
+    assert result.final.message == "已恢复并完成回答。"
+    assert result.tool_calls[0].error_code == "INVALID_JSON_ARGUMENTS"
+    retry_messages = completions.calls[1]["messages"]
+    feedback = next(message for message in retry_messages if message.get("role") == "tool")
+    assert "INVALID_JSON_ARGUMENTS" in feedback["content"]
 
 
 def test_deepseek_builder_requires_key_and_model(monkeypatch):

@@ -7,3 +7,4 @@ python-dotenv>=1.0.0,<2.0.0
 SQLAlchemy>=2.0.40,<3.0.0
 alembic>=1.15.0,<2.0.0
 psycopg[binary]>=3.2.0,<4.0.0
+chromadb>=1.0.0,<2.0.0

@@ -4,12 +4,7 @@ from typing import Protocol
 
 import re
 
-from .models import Food, IntentFoodEntity, IntentInterpretation, MealDraftItem
-
-
-class VisionProvider(Protocol):
-    def analyze_meal(self, assets: list[dict[str, str]], foods: list[Food]) -> list[MealDraftItem]:
-        ...
+from .models import Food, IntentFoodEntity, IntentInterpretation
 
 
 class AdviceProvider(Protocol):
@@ -20,30 +15,6 @@ class AdviceProvider(Protocol):
 class AssistantProvider(Protocol):
     def interpret(self, message: str, foods: list[Food]) -> dict:
         ...
-
-
-class MockVisionProvider:
-    def analyze_meal(self, assets: list[dict[str, str]], foods: list[Food]) -> list[MealDraftItem]:
-        lookup = {food.name: food for food in foods}
-        suggestions = [
-            ("米饭", 180, "1碗"),
-            ("番茄炒蛋", 180, "1份"),
-            ("清炒青菜", 150, "1盘"),
-        ]
-        items: list[MealDraftItem] = []
-        for name, weight, unit in suggestions:
-            food = lookup[name]
-            items.append(
-                MealDraftItem(
-                    food_id=food.id,
-                    name=name,
-                    estimated_weight_g=weight,
-                    household_unit=unit,
-                    confidence="medium",
-                    nutrition=food.nutrition_per_100g,
-                )
-            )
-        return items
 
 
 class MockAdviceProvider:
@@ -126,7 +97,7 @@ class RuleBasedAssistantProvider:
         "香蕉": 100,
     }
     unit_weights = {
-        "个": {"鸡蛋": 50, "香蕉": 100, "小笼包": 30},
+        "个": {"鸡蛋": 50, "香蕉": 100, "小笼包": 30, "牛肉馅饼": 120, "蛋挞": 55},
         "只": {"鸡蛋": 50, "螃蟹": 50},
         "枚": {"鸡蛋": 50, "鹌鹑蛋": 10},
         "颗": {"圣女果": 15, "葡萄": 8, "草莓": 18, "蓝莓": 2, "鲜枣": 20, "龙眼": 10, "旺仔QQ糖": 3},
@@ -321,23 +292,23 @@ class RuleBasedAssistantProvider:
 
     @staticmethod
     def _meal_type(message: str) -> str:
-        if "早餐" in message or "早上" in message:
+        if "早餐" in message or "早饭" in message or "早上" in message:
             return "breakfast"
-        if "晚餐" in message or "晚上" in message:
+        if "晚餐" in message or "晚饭" in message or "晚上" in message:
             return "dinner"
-        if "加餐" in message or "零食" in message:
+        if "加餐" in message or "零食" in message or "上午" in message or "下午" in message:
             return "snack"
         return "lunch"
 
     @staticmethod
     def _explicit_meal_type(message: str) -> str | None:
-        if "早餐" in message or "早上" in message:
+        if "早餐" in message or "早饭" in message or "早上" in message:
             return "breakfast"
         if "午餐" in message or "中午" in message:
             return "lunch"
-        if "晚餐" in message or "晚上" in message:
+        if "晚餐" in message or "晚饭" in message or "晚上" in message:
             return "dinner"
-        if "加餐" in message or "零食" in message:
+        if "加餐" in message or "零食" in message or "上午" in message or "下午" in message:
             return "snack"
         return None
 
