@@ -24,6 +24,7 @@ AIResponseKind = Literal[
     "clarification",
     "safety",
     "health_assessment",
+    "exercise_record_proposal",
 ]
 AgentConfidence = Literal["high", "medium", "low"]
 AgentDecisionStage = Literal["inform", "clarify", "propose", "safety"]
@@ -38,6 +39,7 @@ IntentName = Literal[
     "dietary_knowledge",
     "safety",
     "clarification",
+    "exercise_record",
 ]
 SpeechAct = Literal["statement", "question", "command", "hypothetical"]
 TemporalStatus = Literal["completed", "current", "planned", "hypothetical", "unknown"]
@@ -233,6 +235,43 @@ class Meal(BaseModel):
     confidence: Literal["high", "medium", "low"] = "medium"
     body_feedback: BodyFeedback | None = None
     status: Literal["active", "deleted"] = "active"
+
+
+ExerciseIntensity = Literal["low", "moderate", "high"]
+
+
+class ExerciseRecord(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    profile_id: UUID
+    exercise_type: str = Field(min_length=1, max_length=80)
+    started_at: datetime = Field(default_factory=utc_now)
+    duration_min: int = Field(gt=0, le=1440)
+    intensity: ExerciseIntensity = "moderate"
+    calories_burned: float | None = Field(default=None, ge=0, le=10000)
+    calories_range_kcal: list[float] | None = Field(default=None, min_length=2, max_length=2)
+    calories_source: Literal["user_estimated", "system_estimated"] = "system_estimated"
+    source: Literal["manual", "ai"] = "manual"
+    notes: str | None = Field(default=None, max_length=300)
+    status: Literal["active", "deleted"] = "active"
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ExerciseCreateRequest(BaseModel):
+    exercise_type: str = Field(min_length=1, max_length=80)
+    started_at: datetime = Field(default_factory=utc_now)
+    duration_min: int = Field(gt=0, le=1440)
+    intensity: ExerciseIntensity = "moderate"
+    calories_burned: float | None = Field(default=None, ge=0, le=10000)
+    notes: str | None = Field(default=None, max_length=300)
+
+
+class ExerciseUpdateRequest(BaseModel):
+    exercise_type: str | None = Field(default=None, min_length=1, max_length=80)
+    started_at: datetime | None = None
+    duration_min: int | None = Field(default=None, gt=0, le=1440)
+    intensity: ExerciseIntensity | None = None
+    calories_burned: float | None = Field(default=None, ge=0, le=10000)
+    notes: str | None = Field(default=None, max_length=300)
 
 
 class MealDraftConfirmItem(BaseModel):
@@ -436,7 +475,7 @@ class AgentFeedback(BaseModel):
 class AIAction(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     profile_id: UUID
-    action_type: Literal["create_meal", "remember_preference", "update_safety_profile"] = "create_meal"
+    action_type: Literal["create_meal", "create_exercise", "remember_preference", "update_safety_profile"] = "create_meal"
     title: str
     summary: str
     payload: dict[str, Any]
@@ -549,3 +588,8 @@ class TodaySummary(BaseModel):
     gaps: list[str]
     near_limits: list[str]
     meals: list[Meal]
+    exercises: list[ExerciseRecord] = Field(default_factory=list)
+    exercise_count: int = 0
+    exercise_duration_min: int = 0
+    exercise_calories_burned: float = 0
+    net_energy_kcal: float | None = None

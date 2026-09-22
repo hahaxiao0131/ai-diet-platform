@@ -11,7 +11,7 @@ from typing import Any
 from uuid import UUID, uuid4, uuid5
 
 from .food_catalog import extended_foods
-from .models import AgentFeedback, AgentMemory, AgentTrace, AIAction, Food, GoalProposal, Meal, MealDraft, MealPlan, Profile
+from .models import AgentFeedback, AgentMemory, AgentTrace, AIAction, ExerciseRecord, Food, GoalProposal, Meal, MealDraft, MealPlan, Profile
 
 
 FOOD_NAMESPACE = UUID("2fa324e8-4df3-47f8-a39d-6c6de01bcd8c")
@@ -124,6 +124,7 @@ class MemoryStore:
         self.active_goals: dict[UUID, GoalProposal] = {}
         self.drafts: dict[UUID, MealDraft] = {}
         self.meals: dict[UUID, Meal] = {}
+        self.exercises: dict[UUID, ExerciseRecord] = {}
         self.plans: dict[UUID, MealPlan] = {}
         self.ai_actions: dict[UUID, AIAction] = {}
         self.agent_memories: dict[UUID, AgentMemory] = {}
@@ -150,6 +151,7 @@ class MemoryStore:
             "active_goals": {str(profile_id): str(goal.id) for profile_id, goal in self.active_goals.items()},
             "drafts": [item.model_dump(mode="json") for item in self.drafts.values()],
             "meals": [item.model_dump(mode="json") for item in self.meals.values()],
+            "exercises": [item.model_dump(mode="json") for item in self.exercises.values()],
             "plans": [item.model_dump(mode="json") for item in self.plans.values()],
             "ai_actions": [item.model_dump(mode="json") for item in self.ai_actions.values()],
             "agent_memories": [item.model_dump(mode="json") for item in self.agent_memories.values()],
@@ -202,6 +204,8 @@ class MemoryStore:
         self.drafts = {item.id: item for item in drafts}
         meals = [Meal.model_validate(item) for item in payload.get("meals", [])]
         self.meals = {item.id: item for item in meals}
+        exercises = [ExerciseRecord.model_validate(item) for item in payload.get("exercises", [])]
+        self.exercises = {item.id: item for item in exercises}
         plans = [MealPlan.model_validate(item) for item in payload.get("plans", [])]
         self.plans = {item.id: item for item in plans}
         actions = [AIAction.model_validate(item) for item in payload.get("ai_actions", [])]
@@ -233,6 +237,9 @@ class MemoryStore:
     def meals_for(self, profile_id: UUID) -> list[Meal]:
         return [meal for meal in self.meals.values() if meal.profile_id == profile_id and meal.status == "active"]
 
+    def exercises_for(self, profile_id: UUID) -> list[ExerciseRecord]:
+        return [item for item in self.exercises.values() if item.profile_id == profile_id and item.status == "active"]
+
     def memories_for(self, profile_id: UUID) -> list[AgentMemory]:
         return [memory for memory in self.agent_memories.values() if memory.profile_id == profile_id and memory.status == "active"]
 
@@ -252,6 +259,7 @@ class MemoryStore:
             "goals": sum(goal.profile_id in profile_ids for goal in self.goal_proposals.values()),
             "drafts": sum(draft.profile_id in profile_ids for draft in self.drafts.values()),
             "meals": sum(meal.profile_id in profile_ids for meal in self.meals.values()),
+            "exercises": sum(item.profile_id in profile_ids for item in self.exercises.values()),
             "plans": sum(plan.profile_id in profile_ids for plan in self.plans.values()),
             "ai_actions": sum(action.profile_id in profile_ids for action in self.ai_actions.values()),
             "ai_memories": sum(memory.profile_id in profile_ids for memory in self.agent_memories.values()),
@@ -266,6 +274,7 @@ class MemoryStore:
         self.active_goals = {key: value for key, value in self.active_goals.items() if key not in profile_ids}
         self.drafts = {key: value for key, value in self.drafts.items() if value.profile_id not in profile_ids}
         self.meals = {key: value for key, value in self.meals.items() if value.profile_id not in profile_ids}
+        self.exercises = {key: value for key, value in self.exercises.items() if value.profile_id not in profile_ids}
         self.plans = {key: value for key, value in self.plans.items() if value.profile_id not in profile_ids}
         self.ai_actions = {key: value for key, value in self.ai_actions.items() if value.profile_id not in profile_ids}
         self.agent_memories = {key: value for key, value in self.agent_memories.items() if value.profile_id not in profile_ids}
@@ -281,7 +290,7 @@ class MemoryStore:
     def delete_user(self, user_id: UUID) -> dict[str, Any] | None:
         state_names = (
             "users", "profiles", "foods", "goal_proposals", "active_goals", "drafts", "meals", "plans",
-            "ai_actions", "agent_memories", "agent_traces", "agent_feedback", "weights", "sessions",
+            "ai_actions", "agent_memories", "agent_traces", "agent_feedback", "weights", "sessions", "exercises",
         )
         with self.atomic():
             previous = {name: getattr(self, name) for name in state_names}

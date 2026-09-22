@@ -81,6 +81,16 @@ class MealRow(Base):
     payload: Mapped[dict] = mapped_column(Payload)
 
 
+class ExerciseRow(Base):
+    __tablename__ = "exercises"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    payload: Mapped[dict] = mapped_column(Payload)
+
+
 class MealPlanRow(Base):
     __tablename__ = "meal_plans"
 

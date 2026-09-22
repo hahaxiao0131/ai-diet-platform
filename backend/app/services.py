@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from .models import (
     Food,
     GoalProposal,
+    ExerciseRecord,
     Meal,
     MealDraft,
     MealDraftItem,
@@ -278,11 +279,15 @@ def detect_risks(
     return risks
 
 
-def build_today(profile: Profile, meals: list[Meal], target: Nutrition) -> TodaySummary:
+def build_today(profile: Profile, meals: list[Meal], target: Nutrition, exercises: list[ExerciseRecord] | None = None) -> TodaySummary:
     today_date = business_date()
     active = [
         meal for meal in meals
         if meal.status == "active" and business_date(meal.eaten_at) == today_date
+    ]
+    active_exercises = [
+        exercise for exercise in (exercises or [])
+        if exercise.status == "active" and business_date(exercise.started_at) == today_date
     ]
     consumed = sum_nutrition(meal.nutrition for meal in active)
     remaining = Nutrition(**{
@@ -323,4 +328,9 @@ def build_today(profile: Profile, meals: list[Meal], target: Nutrition) -> Today
         gaps=gaps,
         near_limits=near_limits,
         meals=active,
+        exercises=active_exercises,
+        exercise_count=len(active_exercises),
+        exercise_duration_min=sum(item.duration_min for item in active_exercises),
+        exercise_calories_burned=round(sum(item.calories_burned or 0 for item in active_exercises), 1),
+        net_energy_kcal=round(consumed.energy_kcal - sum(item.calories_burned or 0 for item in active_exercises), 1),
     )

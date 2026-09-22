@@ -1339,7 +1339,7 @@ def today(user_id: UUID = Depends(require_user)):
     profile = get_profile(user_id)
     goal = store.active_goals.get(profile.id)
     target = goal.target if goal else Nutrition()
-    return {"data": build_today(profile, store.meals_for(profile.id), target)}
+    return {"data": build_today(profile, store.meals_for(profile.id), target, store.exercises_for(profile.id))}
 
 
 @app.get("/api/v1/trends/7-days")
@@ -1438,7 +1438,7 @@ def run_diet_assessment(payload: DietAssessmentRequest, user_id: UUID = Depends(
 def preview_meal_plans(payload: MealPlanPreviewRequest, user_id: UUID = Depends(require_user)):
     profile = get_profile(user_id)
     goal = active_goal_or_error(profile.id)
-    today_data = build_today(profile, store.meals_for(profile.id), goal.target)
+    today_data = build_today(profile, store.meals_for(profile.id), goal.target, store.exercises_for(profile.id))
     avoidances = [memory.value for memory in store.memories_for(profile.id) if memory.category == "avoidance"]
     foods = visible_foods(profile.id)
     options = advice_provider.propose(
@@ -1545,7 +1545,7 @@ def ai_chat(payload: AIChatRequest, user_id: UUID = Depends(require_user)):
     parent_trace_id = parent_trace.id if parent_trace else None
     goal = active_goal_or_error(profile.id)
     meals = store.meals_for(profile.id)
-    today_data = build_today(profile, meals, goal.target)
+    today_data = build_today(profile, meals, goal.target, store.exercises_for(profile.id))
     memories = store.memories_for(profile.id)
     recalled_memory = memory_index.retrieve(
         profile,
@@ -2039,7 +2039,7 @@ def ai_chat(payload: AIChatRequest, user_id: UUID = Depends(require_user)):
 def get_ai_context(user_id: UUID = Depends(require_user)):
     profile = get_profile(user_id)
     goal = active_goal_or_error(profile.id)
-    today_data = build_today(profile, store.meals_for(profile.id), goal.target)
+    today_data = build_today(profile, store.meals_for(profile.id), goal.target, store.exercises_for(profile.id))
     return {"data": build_agent_context(today_data, store.memories_for(profile.id))}
 
 
@@ -2258,7 +2258,7 @@ def update_ai_meal_action(
     action.assumptions = [*action.assumptions, "已按你在待确认卡片中的手动填写重新计算营养预览"][-8:]
 
     goal = active_goal_or_error(profile.id)
-    today_data = build_today(profile, store.meals_for(profile.id), goal.target)
+    today_data = build_today(profile, store.meals_for(profile.id), goal.target, store.exercises_for(profile.id))
     trace = AgentTrace(
         profile_id=profile.id,
         message="用户在待确认记餐卡片中修改提案",

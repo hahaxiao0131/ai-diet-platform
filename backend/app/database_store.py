@@ -19,6 +19,7 @@ from .db_models import (
     Base,
     FoodRow,
     GoalRow,
+    ExerciseRow,
     MealDraftRow,
     MealPlanRow,
     MealRow,
@@ -28,7 +29,7 @@ from .db_models import (
     UserRow,
     WeightRecordRow,
 )
-from .models import AgentFeedback, AgentMemory, AgentTrace, AIAction, Food, GoalProposal, Meal, MealDraft, MealPlan, Profile
+from .models import AgentFeedback, AgentMemory, AgentTrace, AIAction, ExerciseRecord, Food, GoalProposal, Meal, MealDraft, MealPlan, Profile
 from .store import MemoryStore, _json_value
 
 
@@ -72,6 +73,7 @@ class DatabaseStore(MemoryStore):
             self._persist_goals(session)
             self._persist_model_map(session, MealDraftRow, self.drafts, self._draft_values)
             self._persist_model_map(session, MealRow, self.meals, self._meal_values)
+            self._persist_model_map(session, ExerciseRow, self.exercises, self._exercise_values)
             self._persist_model_map(session, MealPlanRow, self.plans, self._plan_values)
             self._persist_model_map(session, AIActionRow, self.ai_actions, self._action_values)
             self._persist_model_map(session, AgentMemoryRow, self.agent_memories, self._memory_values)
@@ -107,6 +109,7 @@ class DatabaseStore(MemoryStore):
 
             self.drafts = self._load_models(session, MealDraftRow, MealDraft)
             self.meals = self._load_models(session, MealRow, Meal)
+            self.exercises = self._load_models(session, ExerciseRow, ExerciseRecord)
             self.plans = self._load_models(session, MealPlanRow, MealPlan)
             self.ai_actions = self._load_models(session, AIActionRow, AIAction)
             self.agent_memories = self._load_models(session, AgentMemoryRow, AgentMemory)
@@ -197,6 +200,13 @@ class DatabaseStore(MemoryStore):
         }
 
     @staticmethod
+    def _exercise_values(item: ExerciseRecord) -> dict[str, Any]:
+        return {
+            "id": str(item.id), "profile_id": str(item.profile_id), "status": item.status,
+            "started_at": item.started_at, "payload": _payload(item),
+        }
+
+    @staticmethod
     def _plan_values(item: MealPlan) -> dict[str, Any]:
         return {"id": str(item.id), "profile_id": str(item.profile_id), "status": item.status, "payload": _payload(item)}
 
@@ -267,6 +277,7 @@ class DatabaseStore(MemoryStore):
                 session.execute(delete(AgentTraceRow).where(AgentTraceRow.profile_id.in_(encoded_profile_ids)))
                 session.execute(delete(MealDraftRow).where(MealDraftRow.profile_id.in_(encoded_profile_ids)))
                 session.execute(delete(MealRow).where(MealRow.profile_id.in_(encoded_profile_ids)))
+                session.execute(delete(ExerciseRow).where(ExerciseRow.profile_id.in_(encoded_profile_ids)))
                 session.execute(delete(MealPlanRow).where(MealPlanRow.profile_id.in_(encoded_profile_ids)))
                 session.execute(delete(ActiveGoalRow).where(ActiveGoalRow.profile_id.in_(encoded_profile_ids)))
                 session.execute(delete(GoalRow).where(GoalRow.profile_id.in_(encoded_profile_ids)))
