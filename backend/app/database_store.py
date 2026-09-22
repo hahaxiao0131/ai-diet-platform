@@ -51,6 +51,8 @@ class DatabaseStore(MemoryStore):
 
     def __init__(self, database_url: str, *, auto_create: bool = True, engine: Engine | None = None) -> None:
         super().__init__(None)
+        if database_url.startswith("postgresql://"):
+            database_url = "postgresql+psycopg://" + database_url.removeprefix("postgresql://")
         self.backend_name = "postgresql" if database_url.startswith("postgresql") else "database"
         self.database_url = database_url
         self.engine = engine or create_engine(database_url, pool_pre_ping=True)

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 import re
 import time
+import os
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -77,8 +78,14 @@ from .services import business_date
 from .store import _json_value, store
 
 app = FastAPI(title="AI Diet Management API", version="0.1.0")
+configured_cors_origins = [
+    origin.strip()
+    for origin in os.getenv("DIET_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=configured_cors_origins,
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1):51\d{2}",
     allow_credentials=True,
     allow_methods=["*"],

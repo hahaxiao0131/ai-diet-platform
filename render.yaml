@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: ai-diet-platform-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: alembic upgrade head
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DIET_AUTH_DEV_MODE
+        value: "0"
+      - key: DIET_DB_AUTO_CREATE
+        value: "0"
+      - key: DIET_STORAGE_BACKEND
+        value: postgresql
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-diet-platform-db
+          property: connectionString
+      - key: DIET_IDENTITY_SECRET
+        generateValue: true
+      - key: DIET_CORS_ORIGINS
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DEEPSEEK_BASE_URL
+        value: https://api.deepseek.com
+      - key: DEEPSEEK_MODEL
+        value: deepseek-chat
+      - key: DIET_AI_PROVIDER
+        value: deepseek
+      - key: DIET_ONLINE_FOOD_SEARCH
+        value: "1"
+
+databases:
+  - name: ai-diet-platform-db
+    databaseName: diet_ai
+    user: diet_user
