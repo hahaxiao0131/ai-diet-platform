@@ -1,0 +1,5 @@
+@import "../../styles/common.wxss";
+.segment { display: flex; background: #e7f1ed; border-radius: 16rpx; padding: 6rpx; margin-bottom: 24rpx; }
+.segment text { flex: 1; text-align: center; padding: 18rpx 0; color: #60756e; font-size: 26rpx; }
+.segment text.active { background: #fff; border-radius: 12rpx; color: #087f73; font-weight: 700; }
+.result { background: #f1faf6; border-radius: 16rpx; padding: 18rpx; margin-bottom: 18rpx; }

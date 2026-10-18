@@ -1,0 +1,5 @@
+@import "../../styles/common.wxss";
+.profile-avatar { width: 128rpx; height: 128rpx; border-radius: 38rpx; margin: 0 auto 18rpx; display: block; }
+.center { text-align: center; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16rpx; }
+.form-grid .input { width: auto; }

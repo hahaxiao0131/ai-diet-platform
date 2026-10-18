@@ -1,0 +1,10 @@
+@import "../../styles/common.wxss";
+.thread { min-height: 560rpx; }
+.bubble { max-width: 88%; padding: 22rpx; border-radius: 20rpx; margin-bottom: 18rpx; line-height: 1.6; font-size: 27rpx; white-space: pre-wrap; }
+.bubble.user { margin-left: auto; background: #087f73; color: #fff; border-bottom-right-radius: 6rpx; }
+.bubble.assistant { background: #fff; border-bottom-left-radius: 6rpx; }
+.composer { display: flex; gap: 14rpx; align-items: flex-end; position: sticky; bottom: 18rpx; }
+.composer textarea { flex: 1; background: #fff; border-radius: 18rpx; padding: 20rpx; min-height: 48rpx; font-size: 27rpx; }
+.composer button { flex: 0 0 120rpx; }
+.action-card { border: 2rpx solid #b9dfd4; background: #f1faf6; border-radius: 18rpx; padding: 20rpx; margin-top: 18rpx; }
+.action-summary { font-weight: 700; line-height: 1.5; }

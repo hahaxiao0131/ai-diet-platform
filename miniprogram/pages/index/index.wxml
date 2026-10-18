@@ -1,0 +1,13 @@
+<view class="page">
+  <view class="brand"><image src="/assets/shiji-ai-avatar.png" mode="aspectFill"/><view><view class="brand-title">食记 AI</view><view class="brand-subtitle">记录每天吃了什么，也记录今天的运动</view></view></view>
+  <view wx:if="{{loading}}" class="card"><view class="muted">正在整理今日数据…</view></view>
+  <view wx:if="{{error}}" class="error">{{error}}<view class="button-row" style="margin-top:18rpx"><button class="button secondary" bindtap="load">重试</button><button class="button" bindtap="goProfile">完善档案</button></view></view>
+  <view wx:if="{{today}}">
+    <view class="hero"><view class="eyebrow">{{today.date}} · 今日饮食</view><view class="hero-title">今天吃得怎么样？</view><view class="muted">{{today.gapsText}}</view></view>
+    <view class="card"><view class="eyebrow">今日概览</view><view class="metric-row" style="margin-top:20rpx"><view class="metric"><text class="metric-value">{{today.consumedEnergy}}</text><text class="metric-label">已摄入 kcal</text></view><view class="metric"><text class="metric-value">{{today.remainingEnergy}}</text><text class="metric-label">建议剩余 kcal</text></view><view class="metric"><text class="metric-value">{{today.completeness.recorded_meals}}</text><text class="metric-label">已记录餐次</text></view></view></view>
+    <view class="card"><view class="eyebrow">今日运动</view><view class="card-title">{{today.exercise_count}} 次 · {{today.exercise_duration_min}} 分钟</view><view class="muted">{{today.exerciseSummary}}</view></view>
+    <view class="card"><view class="eyebrow">最近记录</view><block wx:if="{{today.meals.length || today.exercises.length}}"><view wx:for="{{today.meals}}" wx:key="id" class="list-item"><view class="list-main">{{item.mealLabel}} · {{item.items[0].name}}<text class="list-sub">{{item.energy}} kcal</text></view><text class="list-sub">饮食</text></view><view wx:for="{{today.exercises}}" wx:key="id" class="list-item"><view class="list-main">{{item.exercise_type}}<text class="list-sub">{{item.duration_min}} 分钟 · {{item.calories}} kcal</text></view><text class="list-sub">运动</text></view></block><view wx:else class="empty">还没有记录，先记下一餐吧。</view></view>
+    <view class="quick-grid"><view class="quick" bindtap="goAssistant">AI 记餐 / 记运动 →</view><view class="quick" bindtap="goRecord">手动记录 →</view></view>
+  </view>
+  <view class="disclaimer">本结果仅供日常饮食健康参考，不构成医疗诊断或治疗建议。\n如出现持续或严重不适，请及时咨询医生或注册营养师。</view>
+</view>

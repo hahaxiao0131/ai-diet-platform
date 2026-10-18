@@ -45,6 +45,9 @@ from .models import (
     DietAssessmentRequest,
     ExampleMealDraftRequest,
     Food,
+    ExerciseCreateRequest,
+    ExerciseUpdateRequest,
+    ExerciseRecord,
     Meal,
     MealDraft,
     MealDraftConfirmRequest,
@@ -83,10 +86,11 @@ configured_cors_origins = [
     for origin in os.getenv("DIET_CORS_ORIGINS", "").split(",")
     if origin.strip()
 ]
+is_production = os.getenv("DIET_ENV", "development").lower() in {"production", "prod"}
 app.add_middleware(
     CORSMiddleware,
     allow_origins=configured_cors_origins,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):51\d{2}",
+    allow_origin_regex=None if is_production else r"http://(localhost|127\.0\.0\.1):51\d{2}",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -126,6 +130,38 @@ try:
 except Exception:
     online_food_init_error = "ONLINE_FOOD_INIT_ERROR: 联网营养查询初始化失败"
 
+DISCLAIMER = "本结果仅供日常饮食健康参考，不构成医疗诊断或治疗建议。\n如出现持续或严重不适，请及时咨询医生或注册营养师。"
+UNSAFE_OUTPUT_PATTERNS = (
+    r"疾病诊断|诊断为|判断你.*患病|治疗方案|医学处方|替代医生",
+    r"保证(?:减肥|瘦|治愈)|保证.*(?:降糖|降压)|一定能(?:瘦|治好)|彻底治愈",
+    r"(?:建议|应该|可以)\s*(?:自行)?(?:停药|换药|加量|减量)|用药剂量|吃几片药",
+)
+
+
+def _unsafe_advice(text: str) -> bool:
+    normalized = text.replace(DISCLAIMER, "")
+    return any(re.search(pattern, normalized, re.IGNORECASE) for pattern in UNSAFE_OUTPUT_PATTERNS)
+
+
+def sanitize_ai_response(response: AIChatResponse) -> AIChatResponse:
+    """Last-mile guard for model and rule output; prompts are not a safety boundary."""
+    fields = [response.message, *response.basis, *response.suggestions]
+    if response.action is not None:
+        fields.extend([response.action.title, response.action.summary, *response.action.assumptions])
+    if not any(_unsafe_advice(item) for item in fields):
+        return response
+    return response.model_copy(update={
+        "kind": "safety",
+        "message": "我可以帮助记录饮食和运动、估算营养、分析膳食结构与餐后体感，但不能提供医疗判断、用药建议或保证性结论。\n" + DISCLAIMER,
+        "basis": ["该问题超出日常饮食管理范围", "已阻止不安全的健康结论"],
+        "suggestions": ["帮我记录刚才吃的食物", "帮我记录今天的运动"],
+        "action": None,
+        "decision_stage": "safety",
+        "needs_clarification": False,
+        "clarification_options": [],
+        "intent_conflict": "AI 输出安全拦截",
+    })
+
 
 def traced_ai_response(
     profile_id,
@@ -139,6 +175,7 @@ def traced_ai_response(
     parent_trace_id: UUID | None = None,
     resolved_message: str | None = None,
 ):
+    response = sanitize_ai_response(response)
     effective_message = resolved_message or message
     if response.action is not None and response.action.action_type == "create_meal" and "body_feedback" not in response.action.payload:
         feedback = extract_body_feedback(effective_message)
@@ -988,6 +1025,7 @@ def export_account_data(user_id: UUID = Depends(require_user)):
         "active_goal": store.active_goals.get(profile_id).model_dump(mode="json") if store.active_goals.get(profile_id) else None,
         "weight_records": _json_value(store.weights.get(profile_id, [])),
         "meals": [meal.model_dump(mode="json") for meal in store.meals.values() if meal.profile_id == profile_id],
+        "exercises": [item.model_dump(mode="json") for item in store.exercises.values() if item.profile_id == profile_id],
         "meal_drafts": [draft.model_dump(mode="json") for draft in store.drafts.values() if draft.profile_id == profile_id],
         "meal_plans": [plan.model_dump(mode="json") for plan in store.plans.values() if plan.profile_id == profile_id],
         "custom_foods": [food.model_dump(mode="json") for food in owned_foods],
@@ -1317,6 +1355,124 @@ def list_meals(date_value: str | None = Query(default=None, alias="date"), user_
     return {"data": sorted(meals, key=lambda item: item.eaten_at)}
 
 
+EXERCISE_ALIASES = {
+    "网球": "网球", "跑步": "跑步", "慢跑": "跑步", "骑行": "骑行", "自行车": "骑行",
+    "游泳": "游泳", "力量训练": "力量训练", "健身": "力量训练", "瑜伽": "瑜伽",
+    "羽毛球": "羽毛球", "篮球": "篮球", "足球": "足球", "跳绳": "跳绳",
+}
+EXERCISE_MET = {"low": 4.5, "moderate": 7.0, "high": 9.0}
+
+
+def estimate_exercise_calories(profile, duration_min: int, intensity: str) -> tuple[float, list[float]]:
+    weight = profile.current_weight_kg or 60
+    value = EXERCISE_MET.get(intensity, 7.0) * 3.5 * weight / 200 * duration_min
+    return round(value, 1), [round(value * 0.85, 1), round(value * 1.15, 1)]
+
+
+def parse_exercise_message(message: str, profile) -> dict[str, Any] | None:
+    if any(word in message for word in ["想打", "准备打", "要不要打", "怎么打"]):
+        return None
+    exercise_type = next((label for alias, label in EXERCISE_ALIASES.items() if alias in message), None)
+    if not exercise_type or not any(word in message for word in ["今天", "昨天", "刚刚", "打了", "跑了", "做了", "完成", "运动了"]):
+        return None
+    duration_match = re.search(r"([一二两三四五六七八九十半\d]+(?:\.\d+)?)\s*(?:个)?(小时|h|hr|分钟|min)", message, re.IGNORECASE)
+    if not duration_match:
+        return None
+    raw_duration = duration_match.group(1)
+    try:
+        duration_value = _parse_follow_up_count(raw_duration)
+    except (TypeError, ValueError):
+        return None
+    duration = duration_value * (60 if duration_match.group(2).lower() in {"小时", "h", "hr"} else 1)
+    intensity = "high" if any(word in message for word in ["高强度", "剧烈", "冲刺"]) else "low" if any(word in message for word in ["低强度", "轻松", "拉伸"]) else "moderate"
+    calories_match = re.search(r"(?:消耗(?:了)?|燃烧(?:了)?)\s*(\d+(?:\.\d+)?)\s*(?:千卡|大卡|kcal|卡)", message, re.IGNORECASE)
+    calories = float(calories_match.group(1)) if calories_match else None
+    estimate, ranges = estimate_exercise_calories(profile, round(duration), intensity)
+    started_at = datetime.now(timezone.utc) - (timedelta(days=1) if "昨天" in message else timedelta(0))
+    return {
+        "exercise_type": exercise_type,
+        "started_at": started_at.isoformat(),
+        "duration_min": round(duration),
+        "intensity": intensity,
+        "calories_burned": calories if calories is not None else estimate,
+        "calories_range_kcal": None if calories is not None else ranges,
+        "calories_source": "user_estimated" if calories is not None else "system_estimated",
+        "source": "ai",
+        "notes": None,
+    }
+
+
+def exercise_proposal(profile, payload: dict[str, Any]) -> AIChatResponse:
+    minutes = payload["duration_min"]
+    calorie_text = f"约 {payload['calories_burned']:.0f} 千卡" if payload["calories_source"] == "system_estimated" else f"你提供约 {payload['calories_burned']:.0f} 千卡"
+    basis = ["运动记录确认后才会计入今日数据", "消耗值为估算值，不用于医疗或体重保证"]
+    if payload.get("calories_range_kcal"):
+        basis.append(f"按个人体重和运动强度估算范围：{payload['calories_range_kcal'][0]:.0f}–{payload['calories_range_kcal'][1]:.0f} 千卡")
+    return AIChatResponse(
+        kind="exercise_record_proposal",
+        message=f"我识别到一条运动记录：{payload['exercise_type']} {minutes} 分钟，{calorie_text}。确认后会计入今日运动数据。",
+        basis=basis,
+        suggestions=["确认记录", "修改运动信息"],
+        action=AIAction(profile_id=profile.id, action_type="create_exercise", title="确认运动记录", summary=f"{payload['exercise_type']} · {minutes} 分钟 · {calorie_text}", payload=payload, preview_nutrition=Nutrition(), confidence="medium", assumptions=["运动消耗仅作日常记录参考", "如需精确数据请以设备或个人记录为准"]),
+        confidence="medium",
+        decision_stage="propose",
+        provider="rule",
+    )
+
+
+@app.get("/api/v1/exercises")
+def list_exercises(date_value: str | None = Query(default=None, alias="date"), user_id: UUID = Depends(require_user)):
+    profile = get_profile(user_id)
+    exercises = store.exercises_for(profile.id)
+    if date_value:
+        exercises = [item for item in exercises if business_date(item.started_at).isoformat() == date_value]
+    return {"data": sorted(exercises, key=lambda item: item.started_at)}
+
+
+@app.post("/api/v1/exercises")
+def create_exercise(payload: ExerciseCreateRequest, user_id: UUID = Depends(require_user)):
+    profile = get_profile(user_id)
+    calories = payload.calories_burned
+    ranges = None
+    source = "user_estimated" if calories is not None else "system_estimated"
+    if calories is None:
+        calories, ranges = estimate_exercise_calories(profile, payload.duration_min, payload.intensity)
+    exercise_values = payload.model_dump()
+    exercise_values.update(calories_burned=calories, calories_range_kcal=ranges, calories_source=source)
+    record = ExerciseRecord(profile_id=profile.id, **exercise_values)
+    store.exercises[record.id] = record
+    store.persist()
+    return {"data": record}
+
+
+@app.patch("/api/v1/exercises/{exercise_id}")
+def update_exercise(exercise_id: UUID, payload: ExerciseUpdateRequest, user_id: UUID = Depends(require_user)):
+    profile = get_profile(user_id)
+    record = store.exercises.get(exercise_id)
+    if not record or record.profile_id != profile.id or record.status != "active":
+        raise HTTPException(status_code=404, detail={"code": "EXERCISE_NOT_FOUND", "message": "运动记录不存在"})
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(record, key, value)
+    if "calories_burned" not in payload.model_fields_set:
+        record.calories_burned, record.calories_range_kcal = estimate_exercise_calories(profile, record.duration_min, record.intensity)
+        record.calories_source = "system_estimated"
+    else:
+        record.calories_source = "user_estimated"
+    store.persist()
+    return {"data": record}
+
+
+@app.delete("/api/v1/exercises/{exercise_id}")
+def delete_exercise(exercise_id: UUID, user_id: UUID = Depends(require_user)):
+    profile = get_profile(user_id)
+    record = store.exercises.get(exercise_id)
+    if not record or record.profile_id != profile.id or record.status != "active":
+        raise HTTPException(status_code=404, detail={"code": "EXERCISE_NOT_FOUND", "message": "运动记录不存在"})
+    record.status = "deleted"
+    store.persist()
+    return {"data": record}
+
+
 @app.post("/api/v1/meals/manual")
 def create_manual_meal(payload: ManualMealCreateRequest, user_id: UUID = Depends(require_user)):
     profile = get_profile(user_id)
@@ -1606,13 +1762,31 @@ def ai_chat(payload: AIChatRequest, user_id: UUID = Depends(require_user)):
     if is_safety_message(message):
         return traced_ai_response(profile.id, request_message, "safety", context, AIChatResponse(
             kind="safety",
-            message="这个问题涉及疾病、用药或特殊生理状态，我不能据此替你调整治疗或给出诊断性饮食方案。请先咨询医生或注册营养师；我可以继续帮你如实记录饮食。",
-            basis=["当前助手只提供一般饮食管理支持", "医疗目标和禁忌必须由专业人员确认"],
+            message="这类问题超出日常饮食管理范围，我不能提供针对性的健康判断或用药建议。请咨询医生或注册营养师；我可以继续帮你记录饮食、运动和餐后体感。\n" + DISCLAIMER,
+            basis=["当前助手只提供日常饮食管理支持", "特殊健康情况需要专业人员确认"],
             suggestions=["帮我记录刚才吃的食物", "查看今天的普通饮食记录"],
             confidence="high",
             decision_stage="safety",
             provider="safety_guard",
         ), structured_intent=rule_structured, final_action_allowed=False,
+            parent_trace_id=parent_trace_id, resolved_message=message)
+
+    # Completed exercise statements are deterministic records, not open-ended advice.
+    exercise_payload = parse_exercise_message(message, profile)
+    if exercise_payload:
+        has_food = any(token in message for token in ["吃", "喝", "早餐", "午餐", "晚餐", "米饭", "鸡蛋"])
+        if has_food:
+            return traced_ai_response(profile.id, request_message, "clarification", context, AIChatResponse(
+                kind="clarification",
+                message="我识别到运动和饮食两条信息。为避免误记，请先分别确认运动记录，或再单独发送吃过的食物。",
+                basis=["运动和饮食会分别进入不同记录", "任何写入都会先展示确认卡片"],
+                suggestions=["确认记录这次运动", "我吃了刚才的食物"],
+                confidence="high", decision_stage="clarify", needs_clarification=True,
+                clarification_options=["确认记录这次运动", "先不记录运动"], provider="rule"),
+                structured_intent=rule_structured, final_action_allowed=False,
+                parent_trace_id=parent_trace_id, resolved_message=message)
+        return traced_ai_response(profile.id, request_message, "exercise_record", context, exercise_proposal(profile, exercise_payload),
+            structured_intent=rule_structured, final_action_allowed=True,
             parent_trace_id=parent_trace_id, resolved_message=message)
 
     # A short reply to a proposed meal is an amendment, not a new task. Restrict
@@ -1846,8 +2020,8 @@ def ai_chat(payload: AIChatRequest, user_id: UUID = Depends(require_user)):
     if intent == "safety":
         return rule_response(AIChatResponse(
             kind="safety",
-            message="这个问题涉及疾病、用药或特殊生理状态，我不能据此替你调整治疗或给出诊断性饮食方案。请先咨询医生或注册营养师；我可以继续帮你如实记录饮食。",
-            basis=["当前助手只提供一般饮食管理支持", "医疗目标和禁忌必须由专业人员确认"],
+            message="这类问题超出日常饮食管理范围，我不能提供针对性的健康判断或用药建议。请咨询医生或注册营养师；我可以继续帮你记录饮食、运动和餐后体感。\n" + DISCLAIMER,
+            basis=["当前助手只提供日常饮食管理支持", "特殊健康情况需要专业人员确认"],
             suggestions=["帮我记录刚才吃的食物", "查看今天的普通饮食记录"],
             confidence="high",
             decision_stage="safety",
@@ -1943,7 +2117,7 @@ def ai_chat(payload: AIChatRequest, user_id: UUID = Depends(require_user)):
         memory_basis = [f"已考虑偏好：{'、'.join(context.active_memories)}"] if context.active_memories else []
         return rule_response(AIChatResponse(
             kind="plan_recommendation",
-            message=f"下一餐可以优先补约 {remaining_protein}g 的蛋白质缺口{caution}。我会给你家常、快手和便利三种方案，营养值先预览再决定。",
+            message=f"今天还差约 {remaining_protein}g 蛋白质；下一餐会按合理份量优先补一部分，不需要一次补齐{caution}。我会给你家常、快手和便利三种方案，营养值先预览再决定。",
             basis=[f"今日剩余约 {remaining_energy} kcal", f"蛋白质还差约 {remaining_protein}g", *memory_basis],
             suggestions=["为什么蛋白质不足？", "鸡胸肉能换什么？"],
             cta="preview_plans",
@@ -2329,8 +2503,9 @@ def confirm_ai_action(
         if payload is not None:
             raise HTTPException(status_code=409, detail={"code": "AI_ACTION_ALREADY_CONFIRMED", "message": "该动作已经确认"})
         meal = store.meals.get(UUID(action.payload["meal_id"])) if action.action_type == "create_meal" else None
+        exercise = store.exercises.get(UUID(action.payload["exercise_id"])) if action.action_type == "create_exercise" else None
         memory = store.agent_memories.get(UUID(action.payload["memory_id"])) if action.action_type == "remember_preference" else None
-        return {"data": {"action": action, "meal": meal, "memory": memory, "profile": profile if action.action_type == "update_safety_profile" else None}}
+        return {"data": {"action": action, "meal": meal, "exercise": exercise, "memory": memory, "profile": profile if action.action_type == "update_safety_profile" else None}}
     if action.action_type == "remember_preference":
         existing = next((memory for memory in store.memories_for(profile.id) if memory.category == action.payload["category"] and memory.value == action.payload["value"]), None)
         memory = existing or AgentMemory(
@@ -2346,6 +2521,23 @@ def confirm_ai_action(
         action.payload["memory_id"] = str(memory.id)
         store.persist()
         return {"data": {"action": action, "meal": None, "memory": memory}}
+    if action.action_type == "create_exercise":
+        exercise_data = ExerciseCreateRequest.model_validate(action.payload)
+        calories = exercise_data.calories_burned
+        ranges = action.payload.get("calories_range_kcal")
+        source = action.payload.get("calories_source", "system_estimated")
+        if calories is None:
+            calories, ranges = estimate_exercise_calories(profile, exercise_data.duration_min, exercise_data.intensity)
+            source = "system_estimated"
+        exercise_values = exercise_data.model_dump()
+        exercise_values.update(calories_burned=calories, calories_range_kcal=ranges, calories_source=source, source="ai")
+        exercise = ExerciseRecord(profile_id=profile.id, **exercise_values)
+        store.exercises[exercise.id] = exercise
+        action.status = "confirmed"
+        action.revision += 1
+        action.payload["exercise_id"] = str(exercise.id)
+        store.persist()
+        return {"data": {"action": action, "meal": None, "exercise": exercise, "memory": None}}
     if action.action_type == "update_safety_profile":
         allowed_fields = {"allergies", "hard_exclusions", "food_intolerances", "digestive_sensitivities"}
         updates = action.payload.get("updates") or [{

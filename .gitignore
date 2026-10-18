@@ -19,3 +19,7 @@ frontend/work/
 .env
 .env.*
 !.env.example
+
+# Local deployment bundles and machine-specific mini-program settings.
+outputs/
+miniprogram/project.private.config.json

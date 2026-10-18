@@ -112,7 +112,7 @@ export const api = {
   giveAiFeedback: (traceId: string, rating: "helpful" | "not_helpful") =>
     request<AgentFeedback>(`/ai/traces/${traceId}/feedback`, { method: "POST", body: JSON.stringify({ rating }) }),
   confirmAiAction: (id: string, expectedRevision: number) =>
-    request<{ action: AIAction; meal: Meal | null; memory: AgentMemory | null; profile?: Profile | null }>(`/ai/actions/${id}/confirm`, { method: "POST", body: JSON.stringify({ expected_revision: expectedRevision }) }),
+    request<{ action: AIAction; meal: Meal | null; exercise: ExerciseRecord | null; memory: AgentMemory | null; profile?: Profile | null }>(`/ai/actions/${id}/confirm`, { method: "POST", body: JSON.stringify({ expected_revision: expectedRevision }) }),
   updateAiAction: (id: string, payload: AIActionMealUpdatePayload) =>
     request<AIAction>(`/ai/actions/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   cancelAiAction: (id: string, expectedRevision: number) =>
@@ -132,6 +132,7 @@ export type AccountExport = {
   active_goal: GoalProposal | null;
   weight_records: unknown[];
   meals: Meal[];
+  exercises?: ExerciseRecord[];
   meal_drafts: MealDraft[];
   meal_plans: MealPlan[];
   custom_foods: Food[];
@@ -359,11 +360,32 @@ export type TodaySummary = {
   gaps: string[];
   near_limits: string[];
   meals: Meal[];
+  exercises: ExerciseRecord[];
+  exercise_count: number;
+  exercise_duration_min: number;
+  exercise_calories_burned: number;
+  net_energy_kcal: number | null;
+};
+
+export type ExerciseRecord = {
+  id: string;
+  profile_id: string;
+  exercise_type: string;
+  started_at: string;
+  duration_min: number;
+  intensity: "low" | "moderate" | "high";
+  calories_burned: number | null;
+  calories_range_kcal: number[] | null;
+  calories_source: "user_estimated" | "system_estimated";
+  source: "manual" | "ai";
+  notes: string | null;
+  status: "active" | "deleted";
+  created_at: string;
 };
 
 export type AIAction = {
   id: string;
-  action_type: "create_meal" | "remember_preference" | "update_safety_profile";
+  action_type: "create_meal" | "create_exercise" | "remember_preference" | "update_safety_profile";
   title: string;
   summary: string;
   payload: {
@@ -389,6 +411,14 @@ export type AIAction = {
     value?: string;
     safety_risks?: SafetyRisk[];
     safety_acknowledged_at?: string;
+    exercise_type?: string;
+    started_at?: string;
+    duration_min?: number;
+    intensity?: "low" | "moderate" | "high";
+    calories_burned?: number;
+    calories_range_kcal?: number[] | null;
+    calories_source?: "user_estimated" | "system_estimated";
+    exercise_id?: string;
   };
   preview_nutrition: Nutrition;
   confidence: AgentConfidence;
@@ -461,7 +491,7 @@ export type AgentFeedback = {
 };
 
 export type AIChatResponse = {
-  kind: "explanation" | "meal_record_proposal" | "consumption_advice" | "plan_recommendation" | "food_replacement" | "food_nutrition" | "dietary_knowledge" | "memory_proposal" | "safety_profile_proposal" | "clarification" | "safety" | "health_assessment";
+  kind: "explanation" | "meal_record_proposal" | "exercise_record_proposal" | "consumption_advice" | "plan_recommendation" | "food_replacement" | "food_nutrition" | "dietary_knowledge" | "memory_proposal" | "safety_profile_proposal" | "clarification" | "safety" | "health_assessment";
   message: string;
   basis: string[];
   suggestions: string[];

@@ -1,0 +1,31 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/assistant/assistant",
+    "pages/record/record",
+    "pages/profile/profile",
+    "pages/privacy/privacy"
+  ],
+  "window": {
+    "navigationBarTitleText": "食记 AI",
+    "navigationBarBackgroundColor": "#f5f8f5",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#f5f8f5",
+    "backgroundTextStyle": "light"
+  },
+  "tabBar": {
+    "color": "#72817b",
+    "selectedColor": "#087f73",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      { "pagePath": "pages/index/index", "text": "今日" },
+      { "pagePath": "pages/assistant/assistant", "text": "AI记餐" },
+      { "pagePath": "pages/record/record", "text": "记录" },
+      { "pagePath": "pages/profile/profile", "text": "我的" }
+    ]
+  },
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents",
+  "__usePrivacyCheck__": true
+}

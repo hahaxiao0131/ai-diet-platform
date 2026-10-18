@@ -291,3 +291,6 @@ python -m pytest tests/test_product_eval.py -q -p no:cacheprovider
 ```
 
 Read the product and implementation contracts in `docs/` before extending P0.
+# 微信小程序导入入口
+
+原生微信小程序前端已放在 [`miniprogram/`](./miniprogram/)。请用微信开发者工具直接导入该目录；导入前先修改 `miniprogram/utils/config.js` 的 HTTPS API 地址，并在 `miniprogram/project.config.json` 中填写真实 AppID。详细步骤见 [`miniprogram/README.md`](./miniprogram/README.md)。

@@ -388,7 +388,7 @@ function LoginPage({ onLogin }: { onLogin: (session: AuthSession) => Promise<voi
 
   return <div className="login-screen">
     <section className="login-panel">
-      <div className="login-brand"><div className="brand-mark"><Leaf size={21} /><span>食见</span></div><span>AI 饮食管理</span></div>
+      <div className="login-brand"><div className="brand-mark"><Leaf size={21} /><span>食记 AI</span></div><span>饮食记录与营养估算</span></div>
       <div className="login-heading"><span className="eyebrow">欢迎回来</span><h1>登录后，继续记录今天。</h1><p>你的饮食记录、目标和自定义食物会同步到当前账号。</p></div>
       <div className="login-tabs"><button className={mode === "wechat" ? "active" : ""} onClick={() => { setMode("wechat"); setError(""); }}>微信授权</button><button className={mode === "phone" ? "active" : ""} onClick={() => { setMode("phone"); setError(""); }}>手机号</button></div>
       {mode === "wechat" ? <div className="wechat-login"><div className="wechat-mark"><MessageCircle size={30} /></div><strong>使用微信授权登录</strong><span>微信小程序中将调用系统授权，不会获取你的微信密码。</span><button className="button wechat-button" disabled={loading} onClick={loginWithWechat}><MessageCircle size={18} />{loading ? "授权中…" : "微信授权登录"}</button></div> : <div className="phone-login">
@@ -398,7 +398,8 @@ function LoginPage({ onLogin }: { onLogin: (session: AuthSession) => Promise<voi
         <button className="button primary login-submit" disabled={loading} onClick={loginWithPhone}>{loading ? "登录中…" : "登录 / 注册"}</button>
       </div>}
       {error && <div className="inline-error" role="alert">{error}</div>}
-      <div className="login-consent"><ShieldAlert size={14} />登录即表示你同意在本地 V1 环境保存账号和饮食数据。</div>
+      <div className="login-consent"><ShieldAlert size={14} />登录即表示你已阅读并同意《用户协议》和《隐私政策》；我们会保存你主动提交的饮食、体感、运动和档案数据。</div>
+      <details className="privacy-summary"><summary>查看信息收集与使用说明</summary><p>我们收集你主动提交的身高、体重、年龄、饮食记录、过敏/不耐受、餐后体感和运动习惯，用于营养估算、膳食结构分析和个性化饮食建议。你可以在“我的”中导出或删除账户数据；生成 AI 回答所需文本可能由第三方 AI 服务处理。</p></details>
     </section>
   </div>;
 }
@@ -446,12 +447,12 @@ function Onboarding({ onComplete, onLogout, error }: { onComplete: (payload: Par
           <SafetyProfileInput label="食物过敏" impact="可能涉及严重反应；推荐和保存会硬性拦截" value={form.allergies ?? []} placeholder="如 花生、虾" onChange={(allergies) => setForm({ ...form, allergies })} />
           <SafetyProfileInput label="绝对避免食物" impact="个人、宗教或伦理原因绝对不吃；推荐和保存会硬性拦截" value={form.hard_exclusions ?? []} placeholder="如 牛肉" onChange={(hard_exclusions) => setForm({ ...form, hard_exclusions })} />
           <SafetyProfileInput label="食物不耐受" impact="推荐会避开，记餐时提示；不等同于过敏" value={form.food_intolerances ?? []} placeholder="如 乳糖不耐受" onChange={(food_intolerances) => setForm({ ...form, food_intolerances })} />
-          <SafetyProfileInput label="肠胃敏感" impact="仅用于个性化提醒，不作为医疗诊断" value={form.digestive_sensitivities ?? []} placeholder="如 玉米吃多易腹胀" onChange={(digestive_sensitivities) => setForm({ ...form, digestive_sensitivities })} />
+          <SafetyProfileInput label="肠胃敏感" impact="仅用于个性化饮食提醒" value={form.digestive_sensitivities ?? []} placeholder="如 玉米吃多易腹胀" onChange={(digestive_sensitivities) => setForm({ ...form, digestive_sensitivities })} />
         </div>}
         {error && <div className="inline-error">{error}</div>}
         <div className="onboarding-actions"><button className="button ghost" disabled={step === 0} onClick={() => setStep(step - 1)}>返回</button><button className="button primary" disabled={!canNext} onClick={() => step < steps.length - 1 ? setStep(step + 1) : onComplete({ ...form, safety_profile_reviewed: true })}>{step < steps.length - 1 ? <>下一步 <ArrowRight size={16} /></> : <>生成我的目标 <Sparkles size={16} /></>}</button></div>
       </section>
-      <div className="onboarding-note"><ShieldAlert size={15} />这是饮食管理建议，不替代医疗诊断或治疗。</div>
+      <div className="onboarding-note"><ShieldAlert size={15} />本结果仅供日常饮食健康参考，不构成医疗诊断或治疗建议。如出现持续或严重不适，请及时咨询医生或注册营养师。</div>
     </div>
   );
 }
@@ -472,6 +473,7 @@ function TodayPage({ today, profile, onRecord, onPlans, onNutritionInfo, onFeedb
       <div className="panel calorie-panel"><div className="panel-heading"><div><span className="eyebrow">今日能量</span><h2>{Math.round(consumed.energy_kcal)} <small>/ {Math.round(target.energy_kcal)} kcal</small></h2></div><Flame className="accent-icon" size={20} /></div><div className="progress-line"><span style={{ width: `${Math.min((consumed.energy_kcal / Math.max(target.energy_kcal, 1)) * 100, 100)}%` }} /></div><div className="metric-foot"><span>已摄入</span><strong>还建议 {Math.max(0, Math.round(target.energy_kcal - consumed.energy_kcal))} kcal</strong></div></div>
       <div className="panel status-panel"><div className="panel-heading"><div><span className="eyebrow">记录完整度</span><h2>{recordedMeals}<small>{recordedMeals >= expectedMeals ? " 餐 · 已完整" : ` / ${expectedMeals} 餐`}</small></h2></div><Clock3 className="accent-icon yellow" size={20} /></div><p>{today?.score_status === "insufficient_data" ? "继续记录，评价会更可靠。" : recordedMeals >= expectedMeals ? "基础餐次已完整，加餐也会继续计入。" : "今天的数据正在逐步成形。"}</p><div className="mini-dots">{[0, 1, 2].map((dot) => <span className={dot < recordedMeals ? "filled" : ""} key={dot} />)}</div></div>
     </section>
+    <section className="panel exercise-summary"><div className="panel-heading"><div><span className="eyebrow">今日运动</span><h2>{today?.exercise_count ?? 0}<small> 次 · {today?.exercise_duration_min ?? 0} 分钟</small></h2></div><Activity className="accent-icon" size={20} /></div><p>{today?.exercise_count ? `已记录约 ${Math.round(today.exercise_calories_burned)} 千卡运动消耗；消耗值仅作日常估算参考。` : "在 AI 助手中说“今天打了60分钟网球”，确认后即可计入。"}</p></section>
     <section className="section-block"><div className="section-title"><div><span className="eyebrow">营养缺口</span><h2>下一步补什么</h2></div><button className="icon-button" title="查看营养说明" onClick={onNutritionInfo}><Info size={17} /></button></div><div className="nutrient-grid"><NutrientBar label="蛋白质" current={consumed.protein_g} target={target.protein_g} unit="g" tone="teal" /><NutrientBar label="蔬菜" current={consumed.vegetable_g} target={target.vegetable_g} unit="g" tone="green" /><NutrientBar label="膳食纤维" current={consumed.fiber_g} target={target.fiber_g} unit="g" tone="gold" /></div></section>
     <section className="section-block"><div className="section-title"><div><span className="eyebrow">今日餐次</span><h2>饮食与餐后体感</h2></div><button className="text-button" onClick={onRecord}><Plus size={16} />记录一餐</button></div><div className="meal-list">{today?.meals.length ? today.meals.map((meal) => <MealRow meal={meal} key={meal.id} onFeedback={onFeedback} />) : <EmptyMeal onRecord={onRecord} />}</div></section>
     <button className="next-meal-cta" onClick={onPlans}><div className="cta-icon"><Sparkles size={19} /></div><div><strong>帮我安排下一餐</strong><span>根据今天剩余营养和你的场景，先预览再决定</span></div><ArrowRight size={19} /></button>
@@ -1290,6 +1292,9 @@ function AssistantPage({ active, today, onPlans, onRecorded, onProfileUpdated }:
         setMessages((current) => [...current, { id: `saved-${Date.now()}`, role: "assistant", text: recordedRisk
           ? `${presentSafetyRisk(recordedRisk, "recorded")}若出现明显不适，请及时就医。`
           : "已计入今日饮食。营养汇总和评分也已重新计算。" }]);
+      } else if (response.action.action_type === "create_exercise") {
+        await onRecorded();
+        setMessages((current) => [...current, { id: `exercise-saved-${Date.now()}`, role: "assistant", text: "已计入今日运动。运动时长和消耗估算已同步到今日数据。" }]);
       } else if (response.action.action_type === "update_safety_profile") {
         await onProfileUpdated();
         setMessages((current) => [...current, { id: `safety-profile-${Date.now()}`, role: "assistant", text: "安全档案已更新。后续推荐、计划和保存会按对应风险等级校验，你也可以在“我的/档案”中修改或删除。" }]);
@@ -1392,12 +1397,12 @@ function AssistantPage({ active, today, onPlans, onRecorded, onProfileUpdated }:
                   })}
                   <div className="action-editor-buttons"><button className="button ghost" disabled={Boolean(processingAction)} onClick={() => setEditingAction(null)}>放弃修改</button><button className="button primary" disabled={Boolean(processingAction)} onClick={() => saveActionEdit(message.response!)}><Check size={15} />{processingAction === message.response.action.id ? "更新中" : "更新预览"}</button></div>
                 </div>}
-              </> : <div className="memory-action-summary">{message.response.action.action_type === "update_safety_profile" ? <ShieldAlert size={16} /> : <Brain size={16} />}<span>{message.response.action.summary}</span></div>}
+              </> : <div className="memory-action-summary">{message.response.action.action_type === "update_safety_profile" ? <ShieldAlert size={16} /> : message.response.action.action_type === "create_exercise" ? <Activity size={16} /> : <Brain size={16} />}<span>{message.response.action.summary}</span></div>}
               {message.response.action.assumptions.length > 0 && <div className="action-assumptions"><strong>{message.response.action.action_type === "create_meal" ? "换算说明" : "影响范围"}</strong>{message.response.action.assumptions.map((item) => <span key={item}>{item}</span>)}</div>}
               {message.response.action.status === "proposed" ? hasLaterActionCard
                 ? <div className="action-status"><RefreshCw size={15} />已同步到后续提案，请在最新卡片操作</div>
                 : <div className="action-buttons">{message.response.action.action_type === "create_meal" && <button className="button ghost" disabled={Boolean(processingAction)} onClick={() => editingAction?.actionId === message.response!.action!.id ? setEditingAction(null) : startActionEdit(message.response!.action!)}><Pencil size={15} />{editingAction?.actionId === message.response.action.id ? "收起修改" : "修改"}</button>}<button className="button ghost" disabled={Boolean(processingAction)} onClick={() => cancelAction(message.response!)}>取消</button><button className="button primary" disabled={Boolean(processingAction)} onClick={() => confirmAction(message.response!)}><Check size={15} />{processingAction === message.response.action.id ? "处理中" : message.response.action.action_type === "create_meal" ? "确认记录" : message.response.action.action_type === "update_safety_profile" ? "确认更新档案" : "确认记住"}</button></div>
-                : <div className="action-status"><Check size={15} />{message.response.action.status === "confirmed" ? message.response.action.action_type === "create_meal" ? "已确认并计入今日" : message.response.action.action_type === "update_safety_profile" ? "安全档案已更新" : "偏好已保存" : "已取消，未写入数据"}</div>}
+                : <div className="action-status"><Check size={15} />{message.response.action.status === "confirmed" ? message.response.action.action_type === "create_meal" ? "已确认并计入今日" : message.response.action.action_type === "create_exercise" ? "已确认并计入今日运动" : message.response.action.action_type === "update_safety_profile" ? "安全档案已更新" : "偏好已保存" : "已取消，未写入数据"}</div>}
             </div>}
             {message.response.cta === "preview_plans" && <button className="assistant-cta" onClick={onPlans}><Utensils size={17} /><span><strong>查看三种下一餐方案</strong><small>先预览营养，再决定是否保存</small></span><ArrowRight size={17} /></button>}
             {message.response.suggestions.length > 0 && <div className="message-suggestions">{message.response.suggestions.map((suggestion) => <button key={suggestion} onClick={() => sendMessage(suggestion)}>{suggestion}</button>)}</div>}
@@ -1412,7 +1417,7 @@ function AssistantPage({ active, today, onPlans, onRecorded, onProfileUpdated }:
     </section>
     <div ref={composerRef} className={`chat-composer ${isListening ? "listening" : ""}`}><div className="speech-controls"><button className="speech-button start" type="button" title={speechSupported ? "开始口述录音" : "当前浏览器不支持语音识别"} disabled={!speechSupported || isListening || speechStarting || sending} onClick={startSpeechRecognition}><Mic size={17} /><span>{speechStarting ? "连接中" : "开始口述录音"}</span></button><button className="speech-button stop" type="button" title="停止录音" disabled={!speechSupported || (!isListening && !speechStarting)} onClick={stopSpeechRecognition}><Square size={15} fill="currentColor" /><span>停止录音</span></button></div><input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !isListening) sendMessage(); }} placeholder={isListening ? "正在识别，可以继续口述；停止后可修改文字" : "描述吃过的东西，或问今天怎么吃"} aria-label="语音识别结果或文字输入" /><button className="send-button" title={isListening ? "请先停止录音" : "发送"} disabled={!input.trim() || sending || isListening} onClick={() => sendMessage()}><Send size={17} /></button></div>
     {speechStatus && <div className={`speech-status ${isListening ? "active" : ""}`} role="alert" aria-live="polite"><Mic size={13} />{speechStatus}<button type="button" title="关闭提示" aria-label="关闭语音提示" onClick={() => setSpeechStatus("")}><X size={12} /></button></div>}
-    <div className="assistant-boundary"><ShieldAlert size={14} />饮食管理建议不替代医疗诊断；营养数值由规则引擎计算。</div>
+    <div className="assistant-boundary"><ShieldAlert size={14} />本结果仅供日常饮食健康参考，不构成医疗诊断或治疗建议。如出现持续或严重不适，请及时咨询医生或注册营养师。</div>
   </div>;
 }
 
@@ -1530,7 +1535,7 @@ function NutritionInfoModal({ today, onClose }: { today: TodaySummary | null; on
       <div><strong>每日目标</strong><span>依据身体数据、活动水平和主要目标生成；修改档案后需要再次确认才会生效。</span></div>
       <div><strong>可信度</strong><span>当前为{today?.confidence === "high" ? "高" : today?.confidence === "medium" ? "中" : "待完善"}。手动填写、AI 对话或示例草稿经确认后，结论会更可靠。</span></div>
     </div>
-    <div className="confidence-note"><ShieldAlert size={15} />饮食建议不替代医疗诊断或治疗。</div>
+    <div className="confidence-note"><ShieldAlert size={15} />本结果仅供日常饮食健康参考，不构成医疗诊断或治疗建议。</div>
     <div className="modal-actions"><button className="button primary" onClick={onClose}>知道了</button></div>
   </section></div>;
 }
@@ -1595,7 +1600,7 @@ function ProfileEditModal({ profile, currentGoal, onClose, onConfirm }: { profil
         <SafetyProfileInput label="食物过敏" impact="高风险：推荐和保存硬性拦截" value={allergies} placeholder="如 花生、虾" onChange={setAllergies} />
         <SafetyProfileInput label="绝对避免食物" impact="硬性规则：推荐和保存硬性拦截" value={hardExclusions} placeholder="如 牛肉" onChange={setHardExclusions} />
         <SafetyProfileInput label="食物不耐受" impact="推荐避开；记餐提示，不等同于过敏" value={intolerances} placeholder="如 乳糖不耐受" onChange={setIntolerances} />
-        <SafetyProfileInput label="肠胃敏感" impact="仅作个性化提醒，不自动诊断" value={sensitivities} placeholder="如 玉米吃多易腹胀" onChange={setSensitivities} />
+        <SafetyProfileInput label="肠胃敏感" impact="仅作个性化饮食提醒" value={sensitivities} placeholder="如 玉米吃多易腹胀" onChange={setSensitivities} />
       </div>
     </div>
     <div className="confidence-note"><Info size={15} />保存后系统会根据新档案重新计算并立即应用每日目标。当前能量目标为 {Math.round(currentGoal?.target.energy_kcal ?? 0)} kcal。</div>
@@ -1610,7 +1615,7 @@ function ProfilePage({ profile, goal, onEdit, onAccountDeleted }: { profile: Pro
     <div className="page-heading"><span className="eyebrow">我的</span><h1>你的饮食档案</h1><p>目标和建议会随着真实记录变化，但不会未经确认自动修改。</p></div>
     <section className="panel profile-summary"><div className="profile-avatar">{profile.age ?? "食"}</div><div><strong>{profile.age}岁 · {profile.height_cm}cm · {profile.current_weight_kg}kg</strong><span>{profile.primary_goal ? goalLabels[profile.primary_goal] : "未设置目标"} · {profile.activity_level ? activityLabels[profile.activity_level] : "未设置活动水平"}</span></div><button className="icon-button" title="编辑档案" onClick={onEdit}><Pencil size={16} /></button></section>
     <section className="section-block"><div className="section-title"><div><span className="eyebrow">当前目标</span><h2>每日建议</h2></div></div><div className="goal-metrics"><Metric label="能量" value={`${Math.round(goal?.target.energy_kcal ?? 0)} kcal`} /><Metric label="蛋白质" value={`${Math.round(goal?.target.protein_g ?? 0)} g`} /><Metric label="膳食纤维" value={`${Math.round(goal?.target.fiber_g ?? 0)} g`} /></div></section>
-    <section className="section-block"><div className="section-title"><div><span className="eyebrow">确定性保护</span><h2>饮食安全档案</h2></div><button className="button ghost" onClick={onEdit}><Pencil size={15} />管理</button></div><div className="profile-factors safety-factors"><ProfileFactor label="食物过敏" impact="推荐和保存硬性拦截" values={profile.allergies} /><ProfileFactor label="绝对避免" impact="推荐和保存硬性拦截" values={profile.hard_exclusions} /><ProfileFactor label="食物不耐受" impact="推荐避开，记餐提示" values={profile.food_intolerances} /><ProfileFactor label="肠胃敏感" impact="个性化提醒，不作为诊断" values={profile.digestive_sensitivities} /></div></section>
+    <section className="section-block"><div className="section-title"><div><span className="eyebrow">确定性保护</span><h2>饮食安全档案</h2></div><button className="button ghost" onClick={onEdit}><Pencil size={15} />管理</button></div><div className="profile-factors safety-factors"><ProfileFactor label="食物过敏" impact="推荐和保存硬性拦截" values={profile.allergies} /><ProfileFactor label="绝对避免" impact="推荐和保存硬性拦截" values={profile.hard_exclusions} /><ProfileFactor label="食物不耐受" impact="推荐避开，记餐提示" values={profile.food_intolerances} /><ProfileFactor label="肠胃敏感" impact="个性化饮食提醒" values={profile.digestive_sensitivities} /></div></section>
     <section className="section-block"><div className="section-title"><div><span className="eyebrow">生活方式</span><h2>运动习惯</h2></div></div><div className="profile-tags">{profile.exercise_habits.length ? profile.exercise_habits.map((item) => <span key={item}>{item}</span>) : <small>暂无</small>}</div></section>
     <section className="privacy-panel"><button className={`privacy-row ${privacyOpen ? "open" : ""}`} onClick={() => setPrivacyOpen((value) => !value)}><ShieldAlert size={17} /><div><strong>你的数据由你控制</strong><span>档案、餐食、体感、计划和 AI 交互记录会保存到当前后端，用于同步和个性化分析。</span>{privacyOpen && <small>当前版本不上传或分析图片；示例草稿不包含用户图片。你可以导出自己的数据，或永久删除账号及其关联数据。</small>}</div><ChevronDown size={16} /></button>{privacyOpen && <AccountDataControls onAccountDeleted={onAccountDeleted} />}</section>
   </div>;

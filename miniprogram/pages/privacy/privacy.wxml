@@ -1,0 +1,4 @@
+<view class="page">
+  <view class="brand"><image src="/assets/shiji-ai-avatar.png" mode="aspectFill"/><view><view class="brand-title">用户协议与隐私说明</view><view class="brand-subtitle">食记 AI · 信息处理规则摘要</view></view></view>
+  <view class="card"><view class="privacy-section"><view class="card-title">我们收集什么</view><text>你主动提交的身高、体重、年龄、饮食记录、过敏和不耐受、餐后体感、运动习惯，以及登录所需的账户标识。</text></view><view class="privacy-section"><view class="card-title">用于什么</view><text>用于饮食记录、营养估算、膳食结构分析、运动记录、餐后体感整理和个性化饮食建议，不用于疾病判断或治疗。</text></view><view class="privacy-section"><view class="card-title">第三方 AI 服务</view><text>生成 AI 回答所需的必要文本可能发送给配置的第三方 AI 服务商。生产上线前应在微信公众平台隐私保护指引中填写真实服务商、处理目的和保存期限。</text></view><view class="privacy-section"><view class="card-title">你的权利</view><text>你可以在“我的”中导出或删除账户数据，也可以停止使用并撤回后续提交。数据保存期限以正式隐私政策公布内容为准。</text></view><view class="privacy-section"><view class="card-title">健康边界</view><text>本结果仅供日常饮食健康参考，不构成医疗诊断或治疗建议。\n如出现持续或严重不适，请及时咨询医生或注册营养师。</text></view></view>
+</view>

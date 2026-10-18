@@ -13,7 +13,7 @@ from .openai_agent import AgentProviderError, AgentSettings, create_openai_clien
 from .reaction_insights import build_reaction_insights
 
 
-DISCLAIMER = "本结果仅供健康参考，不构成医疗建议，身体不适请及时就医。"
+DISCLAIMER = "本结果仅供日常饮食健康参考，不构成医疗诊断或治疗建议。\n如出现持续或严重不适，请及时咨询医生或注册营养师。"
 T = TypeVar("T", bound=BaseModel)
 
 
